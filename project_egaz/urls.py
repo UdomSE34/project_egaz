@@ -17,8 +17,13 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from django.urls import include
+from egaz_app import views
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/',include('egaz_app.urls')),
+    path("download-schedules/", views.download_schedules_pdf, name="download_schedules_pdf"),
+    path("login/", views.login_view, name="login"),
+
 ]

@@ -19,7 +19,7 @@ def alert_email(sender, instance, created, **kwargs):
         schedule = instance.schedule
         user_email = "comodoosimba@example.com"  # Replace with real email
         subject = f"Alert: {schedule.hotel.name} is Late"
-        message = f"The schedule on {schedule.day} at {schedule.time} is delayed."
+        message = f"The schedule on {schedule.day} at {schedule.end_time} is delayed."
         
         send_mail(
             subject,

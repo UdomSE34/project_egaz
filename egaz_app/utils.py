@@ -5,7 +5,7 @@ def send_alert_email(user_email, schedule):
     message = f"""
     Hello,
 
-    The scheduled collection for {schedule.hotel.name} on {schedule.day} at {schedule.time} is delayed by more than 15 minutes.
+    The scheduled collection for {schedule.hotel.name} on {schedule.day} at {schedule.end_tme} is delayed by more than 15 minutes.
 
     Please take necessary action.
 
