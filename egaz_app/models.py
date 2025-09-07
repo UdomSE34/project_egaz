@@ -3,8 +3,37 @@ import uuid
 from django.conf import settings
 from django.utils.timezone import now  # <-- add this
 import secrets
+from datetime import date, timedelta
 from django.contrib.auth.hashers import  check_password
 
+
+
+
+# Client
+class Client(models.Model):
+    ROLE_CHOICES = [
+        ('client', 'Client'),
+    ]
+
+    client_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=20, unique=True)
+    email = models.EmailField(unique=True)
+    address = models.TextField()
+    password = models.CharField(max_length=255)  # hashed password will be stored
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='client', editable=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        # Hash the password before saving if it's not already hashed
+        if not self.password.startswith('pbkdf2_'):
+            self.password = make_password(self.password)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.role})"
+    
 
 # Hotels
 class Hotel(models.Model):
@@ -21,6 +50,14 @@ class Hotel(models.Model):
     ]
     
     hotel_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(
+    'Client',
+    on_delete=models.CASCADE,
+    related_name='hotel',
+    null=True,
+    blank=True
+)
+
     name = models.CharField(max_length=100)
     address = models.TextField()
     email = models.EmailField(blank=True, null=True)
@@ -39,6 +76,14 @@ class Hotel(models.Model):
 # Pending Hotles
 class PendingHotel(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(
+    'Client',
+    on_delete=models.CASCADE,
+    related_name='pending_hotel',
+    null=True,
+    blank=True
+)
+
     name = models.CharField(max_length=100)
     address = models.TextField()
     email = models.EmailField(blank=True, null=True)
@@ -69,53 +114,64 @@ class User(models.Model):
     phone = models.CharField(max_length=20)
     password_hash = models.TextField()
 
+    # Extra details
+    date_of_birth = models.DateField(null=True, blank=True)
+    national_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
+
+    # Emergency contact
+    emergency_contact_name = models.CharField(max_length=100, null=True, blank=True)
+
+    RELATIONSHIP_CHOICES = [
+        ("baba", "Baba"),
+        ("mama", "Mama"),
+        ("kaka", "Kaka"),
+        ("dada", "Dada"),
+        ("babu", "Babu"),
+        ("bibi", "Bibi"),
+        ("other", "Other"),
+    ]
+    emergency_contact_relationship = models.CharField(
+        max_length=20, choices=RELATIONSHIP_CHOICES, null=True, blank=True
+    )
+    emergency_contact_phone = models.CharField(max_length=20, null=True, blank=True)
+
+    # Updated roles
     ROLE_CHOICES = [
         ('Admin', 'Admin'),
+        ('HR', 'HR'),
+        ('Supervisors', 'Supervisors'),
+        ('Drivers', 'Drivers'),
         ('Staff', 'Staff'),
         ('Workers', 'Workers'),
     ]
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='Workers')
-
+    suspend_comment = models.TextField(null=True, blank=True)
+    delete_comment = models.TextField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ("active", "Active"),
+            ("pending_suspend", "Pending Suspend"),
+            ("pending_delete", "Pending Delete"),
+            ("suspended", "Suspended"),
+            ("deleted", "Deleted"),
+        ],
+        default="active"
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        # Ensure password is hashed if creating a new user or password is changed
         if not self.password_hash or not self.password_hash.startswith('pbkdf2_'):
             self.password_hash = make_password(self.password_hash or "123456")
         super().save(*args, **kwargs)
 
     def check_password(self, raw_password):
-        """Helper method to check password."""
         return check_password(raw_password, self.password_hash)
 
     def __str__(self):
         return f"{self.name} ({self.role})"
-# Client
-class Client(models.Model):
-    ROLE_CHOICES = [
-        ('client', 'Client'),
-    ]
 
-    client_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100)
-    phone = models.CharField(max_length=20, unique=True)
-    email = models.EmailField(unique=True)
-    address = models.TextField()
-    password = models.CharField(max_length=255)  # hashed password will be stored
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='client', editable=False)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def save(self, *args, **kwargs):
-        # Hash the password before saving if it's not already hashed
-        if not self.password.startswith('pbkdf2_'):
-            self.password = make_password(self.password)
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.name} ({self.role})"
-    
 # Waste Types
 class WasteType(models.Model):
     waste_type_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -148,15 +204,6 @@ class WorkShift(models.Model):
     scheduled_start_time = models.DateTimeField()
     scheduled_end_time = models.DateTimeField()
     shift_type = models.CharField(max_length=20, choices=[('Morning','Morning'),('Evening','Evening'),('Night','Night')])
-
-# Attendance Records
-class AttendanceRecord(models.Model):
-    record_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    shift = models.ForeignKey(WorkShift, on_delete=models.CASCADE)
-    check_in_time = models.DateTimeField(null=True, blank=True)
-    check_out_time = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(max_length=20, choices=[('On_Time','On_Time'),('Late','Late'),('Early_Departure','Early_Departure'),('Absent','Absent')])
-    notes = models.TextField(blank=True, null=True)
 
 import uuid
 import datetime
@@ -269,3 +316,110 @@ class AuthToken(models.Model):
 
     def __str__(self):
         return f"{self.user} - {self.token[:8]}..."
+    
+
+
+class Attendance(models.Model):
+    STATUS_CHOICES = [
+        ("present", "Present"),
+        ("absent", "Absent"),
+        ("sick", "Sick"),
+        ("accident", "Accident"),
+    ]
+
+    attendance_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("User", on_delete=models.CASCADE, related_name="attendances")
+    date = models.DateField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES)
+    comment = models.TextField(blank=True, null=True)
+
+    class Meta:
+        unique_together = ("user", "date")
+
+    def __str__(self):
+        return f"{self.user.name} - {self.date} - {self.status}"
+
+class RoleSalaryPolicy(models.Model):
+    role = models.CharField(max_length=50, unique=True)
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2)
+    deduction_per_absent = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    deduction_per_sick_day = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    bonuses = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    def __str__(self):
+        return f"{self.role} Policy"
+
+
+import uuid
+from datetime import date
+from django.db import models
+
+class Salary(models.Model):
+    STATUS_CHOICES = [
+        ("Pending", "Pending"),
+        ("Paid", "Paid"),
+        ("Unpaid", "Unpaid"),
+    ]
+
+    salary_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("User", on_delete=models.CASCADE, related_name="salaries")
+    policy = models.ForeignKey("RoleSalaryPolicy", on_delete=models.CASCADE, related_name="salaries")
+
+    # Salary details
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    bonuses = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    deductions = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_salary = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="Pending")
+
+    # Salary period
+    month = models.IntegerField(default=date.today().month)
+    year = models.IntegerField(default=date.today().year)
+
+    def save(self, *args, **kwargs):
+        # Exclude Admin users
+        if self.user.role == "Admin":
+            raise ValueError("Admin does not have a salary policy.")
+
+        # Link correct policy
+        if not self.policy or self.policy.role != self.user.role:
+            self.policy = RoleSalaryPolicy.objects.get(role=self.user.role)
+
+        # Auto set base_salary
+        if not self.base_salary or self.base_salary == 0:
+            self.base_salary = self.policy.base_salary
+
+        # Calculate total salary
+        self.total_salary = (self.base_salary + self.bonuses) - self.deductions
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.user.name} ({self.user.role}) - {self.total_salary}"
+
+from django.db import models
+import uuid
+
+class PaidHotelInfo(models.Model):
+    STATUS_CHOICES = [
+        ("Paid", "Paid"),
+        ("Unpaid", "Unpaid"),
+    ]
+
+    paid_hotel_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # Basic info from Hotel
+    hotel = models.OneToOneField('Hotel', on_delete=models.CASCADE, related_name='paid_info')
+    name = models.CharField(max_length=100)
+    address = models.TextField()
+    contact_phone = models.CharField(max_length=20)
+    hadhi = models.CharField(max_length=50)
+    currency = models.CharField(max_length=10)
+    payment_account = models.CharField(max_length=100)
+    
+    # Payment status
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="Unpaid")
+    
+    paid_on = models.DateTimeField(auto_now_add=True)  # When payment was recorded
+
+    def __str__(self):
+        return f"{self.name} ({self.currency}) - {self.status}"

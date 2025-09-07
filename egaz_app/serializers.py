@@ -52,7 +52,14 @@ class ClientSerializer(serializers.ModelSerializer):
 class PendingHotelSerializer(serializers.ModelSerializer):
     class Meta:
         model = PendingHotel
+        fields = "__all__"  # includes 'client'
+
+
+class HotelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Hotel
         fields = '__all__'
+        read_only_fields = ['client', 'created_at']
 
 class WasteTypeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -74,10 +81,7 @@ class WorkShiftSerializer(serializers.ModelSerializer):
         model = WorkShift
         fields = '__all__'
 
-class AttendanceRecordSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AttendanceRecord
-        fields = '__all__'
+
 
 class ScheduleSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
@@ -93,6 +97,21 @@ class ScheduleSerializer(serializers.ModelSerializer):
             'status',
             'hotel',        # lazima ipitishwe kwa create/update
             'hotel_name',   # ya kusoma tu
+        ]
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="user.name", read_only=True)
+    role = serializers.CharField(source="user.role", read_only=True)
+    class Meta:
+        model = Attendance
+        fields = [
+            'attendance_id',
+            'user',
+            'date',
+            'status',
+            'comment',
+            'name',
+            'role',
         ]
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -138,3 +157,73 @@ class CompletedWasteRecordSerializer(serializers.ModelSerializer):
         schedule_id = validated_data.pop('schedule_id')
         schedule = get_object_or_404(Schedule, schedule_id=schedule_id)
         return CompletedWasteRecord.objects.create(schedule=schedule, **validated_data)
+    
+
+# Attendance 
+  
+from rest_framework import serializers
+from .models import User, Salary, RoleSalaryPolicy
+
+
+class RoleSalaryPolicySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoleSalaryPolicy
+        fields = ['id', 'role', 'base_salary', 'deduction_per_absent', 'deduction_per_sick_day','bonuses']
+
+
+class SalarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Salary
+        fields = "__all__"
+        
+        
+# serializers.py
+class UserWithSalarySerializer(serializers.ModelSerializer):
+    salary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'user_id',
+            'name',
+            'role',
+            'salary',
+        ]
+
+    def get_salary(self, obj):
+        month = self.context.get("month")
+        year = self.context.get("year")
+
+        salary = Salary.objects.filter(user=obj, month=month, year=year).first()
+        policy = RoleSalaryPolicy.objects.filter(role=obj.role).first()
+
+        if salary:
+            return {
+                "salary_id": salary.salary_id,
+                "base_salary": float(salary.base_salary),
+                "bonuses": float(salary.bonuses),
+                "deductions": float(salary.deductions),
+                "total_salary": float(salary.total_salary),
+                "status": salary.status,
+                "month": salary.month,
+                "year": salary.year,
+            }
+        elif policy:
+            # Fallback to policy values (new user, no attendance yet)
+            return {
+                "salary_id": None,
+                "base_salary": float(policy.base_salary),
+                "bonuses": float(policy.bonuses),
+                "deductions": 0.0,
+                "total_salary": float(policy.base_salary + policy.bonuses),
+                "status": "Unpaid",
+                "month": month,
+                "year": year,
+            }
+        return None
+
+
+class PaidHotelInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaidHotelInfo
+        fields = "__all__"

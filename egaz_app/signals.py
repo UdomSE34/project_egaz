@@ -28,3 +28,25 @@ def alert_email(sender, instance, created, **kwargs):
             [user_email],
             fail_silently=False
         )
+
+
+
+
+# signals.py
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from .models import Hotel, PaidHotelInfo
+@receiver(post_save, sender=Hotel)
+def create_paid_hotel_info(sender, instance, created, **kwargs):
+    if created:
+        if not hasattr(instance, 'paid_info'):
+            PaidHotelInfo.objects.create(
+                hotel=instance,
+                name=instance.name,
+                address=instance.address,
+                contact_phone=instance.contact_phone,
+                hadhi=instance.hadhi,
+                currency=instance.currency,
+                payment_account=instance.payment_account,
+                status="Pending",  # default
+            )

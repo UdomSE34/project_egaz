@@ -116,6 +116,14 @@ EMAIL_HOST_PASSWORD = 'dxgs eqsw qjkw vxnm'  # Use App Password if Gmail
 DEFAULT_FROM_EMAIL = 'comodoosimba@gmail.com'
 
 
+# REST_FRAMEWORK = {
+#     "DEFAULT_AUTHENTICATION_CLASSES": [
+#         "egaz_app.authentication.CustomTokenAuthentication",
+#     ],
+#     "DEFAULT_PERMISSION_CLASSES": [
+#         "rest_framework.permissions.IsAuthenticated",
+#     ],
+# }
 
 
 # Password validation
