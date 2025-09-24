@@ -23,12 +23,15 @@ def calculate_user_salary(user, month=None, year=None, auto_create=True):
     sick_days = 0
 
     for att in attendance_records:
-        if att.status == "absent" and not att.comment:
+        if att.status == "absent":
             deduction += policy.deduction_per_absent
         elif att.status == "sick":
             sick_days += 1
-            if sick_days > 2:
+            if sick_days > 2:  # after 2 sick days → deduct
                 deduction += policy.deduction_per_sick_day
+        elif att.status in ["off", "accident"]:
+            # ✅ No deduction
+            continue
 
     total_salary = base_salary + bonuses - deduction
 

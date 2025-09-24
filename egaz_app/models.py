@@ -147,6 +147,8 @@ class User(models.Model):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='Workers')
     suspend_comment = models.TextField(null=True, blank=True)
     delete_comment = models.TextField(null=True, blank=True)
+    finaldelete_comment = models.TextField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(
         max_length=20,
         choices=[
@@ -159,6 +161,7 @@ class User(models.Model):
         default="active"
     )
     is_active = models.BooleanField(default=True)
+    receive_email_notifications = models.BooleanField(default=False)  # new field
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
@@ -196,6 +199,7 @@ class Team(models.Model):
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+
 # Work Shifts
 class WorkShift(models.Model):
     shift_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -205,16 +209,16 @@ class WorkShift(models.Model):
     scheduled_end_time = models.DateTimeField()
     shift_type = models.CharField(max_length=20, choices=[('Morning','Morning'),('Evening','Evening'),('Night','Night')])
 
-import uuid
-import datetime
-from django.db import models
-
 class Schedule(models.Model):
     STATUS_CHOICES = [
         ('Pending','Pending'),
         ('In_Progress','In Progress'),
         ('Completed','Completed'),
-        ('Delayed','Delayed'),
+    ]
+
+    SLOT_CHOICES = [
+        ("06:00 – 12:00", "Morning (06:00 – 12:00)"),
+        ("06:00 – 18:00", "Afternoon (00:30 – 18:00)"),
     ]
 
     DAYS_OF_WEEK = [
@@ -226,9 +230,10 @@ class Schedule(models.Model):
     day = models.CharField(max_length=50, choices=DAYS_OF_WEEK)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
     
-    # Time range
-    start_time = models.TimeField()
-    end_time = models.TimeField()
+    # NEW FIELD: Show schedule to user
+    is_visible = models.BooleanField(default=False, help_text="Check if this schedule should be visible to users")
+
+    slot = models.CharField(max_length=20, choices=SLOT_CHOICES, default="Morning")
 
     hotel = models.ForeignKey("Hotel", on_delete=models.CASCADE, related_name="schedules")
     completion_notes = models.TextField(blank=True, null=True)
@@ -236,33 +241,54 @@ class Schedule(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['week_start_date', 'day', 'start_time', 'end_time']
+        ordering = ['week_start_date', 'day', 'slot']
         verbose_name = 'Schedule'
         verbose_name_plural = 'Schedules'
 
-    def save(self, *args, **kwargs):
-        # Auto-set week_start_date based on created_at date (Monday of that week)
-        if not self.week_start_date:
-            today = datetime.date.today()
-            monday = today - datetime.timedelta(days=today.weekday())
-            self.week_start_date = monday
-        super().save(*args, **kwargs)
+    def __str__(self):
+        return f"{self.hotel.name} - {self.day} ({self.slot}) - {self.status}"
+
+from django.db import models
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
+import uuid
+
+class Notification(models.Model):
+    STATUS_CHOICES = [
+        ('Unread', 'Unread'),
+        ('Read', 'Read'),
+        ('Acknowledged', 'Acknowledged')
+    ]
+
+    notification_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Sender (User or Client)
+    sender_content_type = models.ForeignKey(
+        ContentType, on_delete=models.CASCADE, related_name='sent_notifications'
+    )
+    sender_object_id = models.UUIDField()
+    sender = GenericForeignKey('sender_content_type', 'sender_object_id')
+
+    # Recipient (User or Client). Null = broadcast
+    recipient_content_type = models.ForeignKey(
+        ContentType, on_delete=models.CASCADE, related_name='received_notifications',
+        null=True, blank=True
+    )
+    recipient_object_id = models.UUIDField(null=True, blank=True)
+    recipient = GenericForeignKey('recipient_content_type', 'recipient_object_id')
+
+    message_content = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Unread')
+    created_time = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_time']
 
     def __str__(self):
-        return f"{self.hotel.name} - {self.day} {self.start_time}-{self.end_time} - {self.status}"
+        sender_name = getattr(self.sender, 'name', 'Unknown Sender')
+        recipient_name = getattr(self.recipient, 'name', 'Broadcast')
+        return f"{sender_name} → {recipient_name}: {self.message_content[:30]}..."
 
-
-# Notifications
-class Notification(models.Model):
-    notification_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    recipient = models.ForeignKey(User, on_delete=models.CASCADE)
-    related_entity_type = models.CharField(max_length=20, choices=[('Request','Request'),('Schedule','Schedule'),('Attendance','Attendance')])
-    related_entity_id = models.UUIDField()
-    message_type = models.CharField(max_length=50)
-    message_content = models.TextField()
-    status = models.CharField(max_length=20, choices=[('Unread','Unread'),('Read','Read'),('Acknowledged','Acknowledged')])
-    created_time = models.DateTimeField(auto_now_add=True)
-    expiry_time = models.DateTimeField(null=True, blank=True)
 
 # Alerts
 class Alert(models.Model):
@@ -325,6 +351,7 @@ class Attendance(models.Model):
         ("absent", "Absent"),
         ("sick", "Sick"),
         ("accident", "Accident"),
+        ("off", "Off"),   
     ]
 
     attendance_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -332,6 +359,7 @@ class Attendance(models.Model):
     date = models.DateField()
     status = models.CharField(max_length=10, choices=STATUS_CHOICES)
     comment = models.TextField(blank=True, null=True)
+    absent_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         unique_together = ("user", "date")
@@ -423,3 +451,26 @@ class PaidHotelInfo(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.currency}) - {self.status}"
+
+
+import uuid
+from django.db import models
+# Assuming Client model already exists
+
+class PaymentSlip(models.Model):
+    PAYMENT_STATUS_CHOICES = [
+        ('current', 'Current Month'),
+        ('previous', 'Previous Month'),
+    ]
+
+    slip_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='payment_slips')
+    file = models.FileField(upload_to='payment_slips/')  # can handle PDF, image, etc.
+    comment = models.TextField(blank=True, null=True)
+    month_paid = models.DateField()  # stores the month/date of payment
+    status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+
+    def __str__(self):
+        return f"Payment Slip {self.slip_id} - {self.client.name}"

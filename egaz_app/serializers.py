@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import *
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.hashers import make_password
-
+from django.utils import timezone
 
 class HotelSerializer(serializers.ModelSerializer):
     class Meta:
@@ -82,7 +82,6 @@ class WorkShiftSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-
 class ScheduleSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     hotel = serializers.PrimaryKeyRelatedField(queryset=Hotel.objects.all(), write_only=True)
@@ -92,16 +91,18 @@ class ScheduleSerializer(serializers.ModelSerializer):
         fields = [
             'schedule_id',
             'day',
-            'start_time',
-            'end_time',
+            'slot',
             'status',
-            'hotel',        # lazima ipitishwe kwa create/update
-            'hotel_name',   # ya kusoma tu
+            'hotel',
+            'hotel_name',
+            'is_visible',
         ]
+
 
 class AttendanceSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="user.name", read_only=True)
     role = serializers.CharField(source="user.role", read_only=True)
+    user_status = serializers.CharField(source="user.status", read_only=True)
     class Meta:
         model = Attendance
         fields = [
@@ -112,12 +113,89 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'comment',
             'name',
             'role',
+            'user_status',
+            'absent_count',
         ]
+        
+from rest_framework import serializers
+from django.contrib.contenttypes.models import ContentType
+from .models import Notification, User, Client
 
 class NotificationSerializer(serializers.ModelSerializer):
+    sender = serializers.SerializerMethodField(read_only=True)
+    recipient = serializers.SerializerMethodField(read_only=True)
+
+    # Write-only fields
+    sender_type = serializers.ChoiceField(write_only=True, choices=['User', 'Client'])
+    sender_id = serializers.UUIDField(write_only=True)
+    recipient_type = serializers.ChoiceField(write_only=True, choices=['User', 'Client'], required=False)
+    recipient_id = serializers.UUIDField(write_only=True, required=False)
+
     class Meta:
         model = Notification
-        fields = '__all__'
+        fields = [
+            'notification_id',
+            'sender', 'recipient',
+            'sender_type', 'sender_id',
+            'recipient_type', 'recipient_id',
+            'message_content',
+            'status',
+            'created_time'
+        ]
+        read_only_fields = ['notification_id', 'status', 'created_time']
+
+    def get_sender(self, obj):
+        if isinstance(obj.sender, Client):
+            return {"id": obj.sender.client_id, "name": obj.sender.name, "type": "Client", "role": obj.sender.role}
+        elif isinstance(obj.sender, User):
+            return {"id": obj.sender.user_id, "name": obj.sender.name, "type": "User", "role": obj.sender.role}
+        return None
+
+    def get_recipient(self, obj):
+        if obj.recipient is None:
+            return None  # broadcast
+        if isinstance(obj.recipient, Client):
+            return {"id": obj.recipient.client_id, "name": obj.recipient.name, "type": "Client", "role": obj.recipient.role}
+        elif isinstance(obj.recipient, User):
+            return {"id": obj.recipient.user_id, "name": obj.recipient.name, "type": "User", "role": obj.recipient.role}
+        return None
+
+    def create(self, validated_data):
+        sender_type = validated_data.pop('sender_type')
+        sender_id = validated_data.pop('sender_id')
+        recipient_type = validated_data.pop('recipient_type', None)
+        recipient_id = validated_data.pop('recipient_id', None)
+
+        # Resolve sender
+        sender_obj = User.objects.get(user_id=sender_id) if sender_type == 'User' else Client.objects.get(client_id=sender_id)
+
+        # Resolve recipient (None = broadcast)
+        if recipient_type and recipient_id:
+            recipient_obj = User.objects.get(user_id=recipient_id) if recipient_type == 'User' else Client.objects.get(client_id=recipient_id)
+            recipient_model = recipient_obj.__class__
+            recipient_content_type = ContentType.objects.get_for_model(recipient_model)
+            recipient_object_id = recipient_obj.pk
+        else:
+            recipient_content_type = None
+            recipient_object_id = None
+
+        # Business rules
+        if isinstance(sender_obj, Client) and recipient_content_type:
+            if not isinstance(recipient_obj, User) or recipient_obj.role not in ['Staff', 'Admin']:
+                raise serializers.ValidationError("Clients can only message Staff/Admin users.")
+        if isinstance(sender_obj, User) and sender_obj.role == 'Staff' and recipient_content_type:
+            if not isinstance(recipient_obj, Client):
+                raise serializers.ValidationError("Staff can only message Clients.")
+
+        notification = Notification.objects.create(
+            sender_content_type=ContentType.objects.get_for_model(sender_obj.__class__),
+            sender_object_id=sender_obj.pk,
+            recipient_content_type=recipient_content_type,
+            recipient_object_id=recipient_object_id,
+            message_content=validated_data['message_content']
+        )
+        return notification
+
 
 class AlertSerializer(serializers.ModelSerializer):
     class Meta:
@@ -177,9 +255,11 @@ class SalarySerializer(serializers.ModelSerializer):
         fields = "__all__"
         
         
-# serializers.py
+        
 class UserWithSalarySerializer(serializers.ModelSerializer):
     salary = serializers.SerializerMethodField()
+    absences = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -188,11 +268,17 @@ class UserWithSalarySerializer(serializers.ModelSerializer):
             'name',
             'role',
             'salary',
+            'absences',
+            'status',
         ]
 
     def get_salary(self, obj):
-        month = self.context.get("month")
-        year = self.context.get("year")
+        """
+        Get salary for the given month and year. 
+        If no salary exists, fallback to role policy.
+        """
+        month = self.context.get("month", timezone.now().month)
+        year = self.context.get("year", timezone.now().year)
 
         salary = Salary.objects.filter(user=obj, month=month, year=year).first()
         policy = RoleSalaryPolicy.objects.filter(role=obj.role).first()
@@ -209,21 +295,70 @@ class UserWithSalarySerializer(serializers.ModelSerializer):
                 "year": salary.year,
             }
         elif policy:
-            # Fallback to policy values (new user, no attendance yet)
+            # fallback to policy values if no salary exists
+            base_salary = float(policy.base_salary)
+            bonuses = float(policy.bonuses)
             return {
                 "salary_id": None,
-                "base_salary": float(policy.base_salary),
-                "bonuses": float(policy.bonuses),
+                "base_salary": base_salary,
+                "bonuses": bonuses,
                 "deductions": 0.0,
-                "total_salary": float(policy.base_salary + policy.bonuses),
+                "total_salary": base_salary + bonuses,
                 "status": "Unpaid",
                 "month": month,
                 "year": year,
             }
         return None
 
+    def get_absences(self, obj):
+        """
+        Count number of absent days for the user in the given month/year
+        """
+        month = self.context.get("month", timezone.now().month)
+        year = self.context.get("year", timezone.now().year)
 
+        return Attendance.objects.filter(
+            user=obj,
+            status="absent",
+            date__month=month,
+            date__year=year
+        ).count()
+
+    def get_status(self, obj):
+        """
+        Return a dynamic status based on is_active and the status field
+        """
+        if not obj.is_active:
+            return "Inactive"
+        # Combine is_active + status field
+        return obj.status.replace("_", " ").capitalize()
 class PaidHotelInfoSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaidHotelInfo
         fields = "__all__"
+        
+        
+class UserNotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['user_id', 'name', 'email', 'role', 'receive_email_notifications']
+        
+        
+        
+from rest_framework import serializers
+from .models import PaymentSlip
+
+class PaymentSlipSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PaymentSlip
+        fields = "__all__"  # includes all model fields
+        read_only_fields = ['slip_id', 'created_at']
+
+    def get_file_url(self, obj):
+        request = self.context.get("request")
+        if obj.file and hasattr(obj.file, "url"):
+            return request.build_absolute_uri(obj.file.url) if request else obj.file.url
+        return None
+

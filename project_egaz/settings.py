@@ -40,6 +40,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'egaz_app.apps.EgazAppConfig',
     'corsheaders',
+    'django_celery_beat',
+    'django_crontab',
 ]
 
 MIDDLEWARE = [
@@ -53,6 +55,28 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',  # <-- Add this first
     'django.middleware.common.CommonMiddleware',
 ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+}
+
+# settings.py
+
+# Only allow specific frontend origins
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+]
+
+# Allow cookies and credentials
+CORS_ALLOW_CREDENTIALS = True
+
+# Remove CORS_ALLOW_ALL_ORIGINS = True
+
 
 ROOT_URLCONF = 'project_egaz.urls'
 
@@ -166,3 +190,13 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+CRONJOBS = [
+    ('0 16 * * *', 'schedules.cron.daily_apology_job'),
+]
+
+import os
+
+# Where uploaded files are stored
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
