@@ -344,16 +344,17 @@ class UserNotificationSerializer(serializers.ModelSerializer):
         fields = ['user_id', 'name', 'email', 'role', 'receive_email_notifications']
         
         
-        
+# serializers.py
 from rest_framework import serializers
 from .models import PaymentSlip
 
 class PaymentSlipSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
+    receipt_url = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentSlip
-        fields = "__all__"  # includes all model fields
+        fields = "__all__"
         read_only_fields = ['slip_id', 'created_at']
 
     def get_file_url(self, obj):
@@ -362,3 +363,54 @@ class PaymentSlipSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.file.url) if request else obj.file.url
         return None
 
+    def get_receipt_url(self, obj):
+        request = self.context.get("request")
+        if obj.receipt and hasattr(obj.receipt, "url"):
+            return request.build_absolute_uri(obj.receipt.url) if request else obj.receipt.url
+        return None
+
+
+from rest_framework import serializers
+from django.db.models import Sum
+from .models import MonthlyHotelSummary, CompletedWasteRecord, PaymentSlip
+
+class MonthlyHotelDashboardSerializer(serializers.ModelSerializer):
+    # Hotel name from the related client
+    hotel_id = serializers.UUIDField(source='client.hotel.hotel_id', read_only=True)
+    hotel_name = serializers.CharField(source='client.name', read_only=True)
+    
+
+    # Dynamic fields for actual totals
+    actual_waste_litres = serializers.SerializerMethodField()
+    actual_amount_paid = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MonthlyHotelSummary
+        fields = [
+            'summary_id',
+            'hotel_id',
+            'hotel_name',
+            'month',
+            'total_waste_litres',      # processed waste
+            'total_amount_paid',        # processed payment
+            'actual_waste_litres',     # dynamically calculated actual waste
+            'actual_amount_paid',       # dynamically calculated actual payment
+            'created_at',
+            'updated_at'
+        ]
+
+    def get_actual_waste_litres(self, obj):
+        """Calculate actual waste from CompletedWasteRecord for this hotel/month"""
+        return CompletedWasteRecord.objects.filter(
+            schedule__hotel__client=obj.client,
+            created_at__year=obj.month.year,
+            created_at__month=obj.month.month
+        ).aggregate(total_litres=Sum('size_of_litres'))['total_litres'] or 0
+
+    def get_actual_amount_paid(self, obj):
+        """Calculate actual payment from PaymentSlip for this client/month"""
+        return PaymentSlip.objects.filter(
+            client=obj.client,
+            month_paid__year=obj.month.year,
+            month_paid__month=obj.month.month
+        ).aggregate(total_paid=Sum('amount'))['total_paid'] or 0

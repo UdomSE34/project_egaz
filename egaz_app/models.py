@@ -424,8 +424,11 @@ class Salary(models.Model):
     def __str__(self):
         return f"{self.user.name} ({self.user.role}) - {self.total_salary}"
 
+
+
 from django.db import models
 import uuid
+from django.utils.timezone import now
 
 class PaidHotelInfo(models.Model):
     STATUS_CHOICES = [
@@ -434,28 +437,31 @@ class PaidHotelInfo(models.Model):
     ]
 
     paid_hotel_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    
-    # Basic info from Hotel
-    hotel = models.OneToOneField('Hotel', on_delete=models.CASCADE, related_name='paid_info')
+
+    hotel = models.ForeignKey('Hotel', on_delete=models.CASCADE, related_name='paid_info')
     name = models.CharField(max_length=100)
     address = models.TextField()
     contact_phone = models.CharField(max_length=20)
     hadhi = models.CharField(max_length=50)
     currency = models.CharField(max_length=10)
     payment_account = models.CharField(max_length=100)
-    
-    # Payment status
+
+    # New: track month of payment
+    month = models.DateField()  # we’ll store "YYYY-MM-01" (first day of month)
+
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="Unpaid")
-    
-    paid_on = models.DateTimeField(auto_now_add=True)  # When payment was recorded
+    paid_on = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("hotel", "month")  # prevent duplicate records
 
     def __str__(self):
-        return f"{self.name} ({self.currency}) - {self.status}"
+        return f"{self.name} - {self.month.strftime('%B %Y')} - {self.status}"
 
 
+# models.py
 import uuid
 from django.db import models
-# Assuming Client model already exists
 
 class PaymentSlip(models.Model):
     PAYMENT_STATUS_CHOICES = [
@@ -465,12 +471,153 @@ class PaymentSlip(models.Model):
 
     slip_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='payment_slips')
-    file = models.FileField(upload_to='payment_slips/')  # can handle PDF, image, etc.
-    comment = models.TextField(blank=True, null=True)
-    month_paid = models.DateField()  # stores the month/date of payment
+    file = models.FileField(upload_to='payment_slips/')  # uploaded by client
+    comment = models.TextField(blank=True, null=True)  # client's message
+    month_paid = models.DateField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
     status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES)
+    receipt = models.FileField(upload_to='payment_receipts/', blank=True, null=True)  # uploaded by admin
+    admin_comment = models.TextField(blank=True, null=True)  # admin feedback to client
     created_at = models.DateTimeField(auto_now_add=True)
-    
 
     def __str__(self):
         return f"Payment Slip {self.slip_id} - {self.client.name}"
+
+
+
+import uuid
+from django.db import models
+from django.db.models import Sum
+from django.utils.timezone import now
+from django.db.models import Sum, F
+
+# Assuming Client model already exists
+# and PaymentSlip & CompletedWasteRecord models are defined as you provided
+
+class MonthlyHotelSummary(models.Model):
+    """
+    Stores aggregated info per hotel per month:
+    - Total waste collected (in litres)
+    - Total money paid
+    """
+    summary_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='monthly_summaries')
+    month = models.DateField()  # represents the first day of the month (e.g., 2025-10-01)
+    
+    total_waste_litres = models.FloatField(default=0.0)
+    total_amount_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    
+    # optional: timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ('client', 'month')
+        ordering = ['-month']
+
+    def __str__(self):
+        return f"{self.client.name} - {self.month.strftime('%B %Y')}"
+
+    @classmethod
+    def generate_for_month(cls, month_date):
+        """
+        Aggregate data for all hotels for a given month and save/update MonthlyHotelSummary.
+        """
+        from .models import CompletedWasteRecord, PaymentSlip, Hotel
+
+        # Aggregate waste per client via schedule → hotel → client
+        waste_agg = (
+            CompletedWasteRecord.objects
+            .filter(
+                created_at__year=month_date.year,
+                created_at__month=month_date.month
+            )
+            .values('schedule__hotel__client')
+            .annotate(total_litres=Sum(F('number_of_dustbins') * F('size_of_litres')))
+        )
+
+        # Aggregate payments per client
+        payments_agg = (
+            PaymentSlip.objects
+            .filter(
+                month_paid__year=month_date.year,
+                month_paid__month=month_date.month
+            )
+            .values('client')
+            .annotate(total_paid=Sum('amount'))
+        )
+
+        # Ensure every hotel client has a summary
+        hotels = Hotel.objects.filter(client__isnull=False)
+        for hotel in hotels:
+            cls.objects.get_or_create(
+                client=hotel.client,
+                month=month_date.replace(day=1),
+                defaults={
+                    'total_waste_litres': 0.0,
+                    'total_amount_paid': 0.0
+                }
+            )
+
+        # Merge waste and payments into MonthlyHotelSummary
+        for waste in waste_agg:
+            client_id = waste['schedule__hotel__client']
+            total_waste = waste['total_litres'] or 0.0
+
+            payment = next((p for p in payments_agg if p['client'] == client_id), None)
+            total_paid = payment['total_paid'] if payment else 0.0
+
+            cls.objects.update_or_create(
+                client_id=client_id,
+                month=month_date.replace(day=1),
+                defaults={
+                    'total_waste_litres': total_waste,
+                    'total_amount_paid': total_paid
+                }
+            )
+
+        return cls.objects.filter(month=month_date.replace(day=1))
+
+
+# egaz_app/models.py
+from django.db import models
+from django.utils import timezone
+from datetime import timedelta
+import uuid
+
+class FailedLoginAttempt(models.Model):
+    # Either user or client, one will be null
+    user = models.OneToOneField('User', null=True, blank=True, on_delete=models.CASCADE)
+    client = models.OneToOneField('Client', null=True, blank=True, on_delete=models.CASCADE)
+    
+    failed_attempts = models.PositiveIntegerField(default=0)
+    last_failed_at = models.DateTimeField(null=True, blank=True)
+    is_locked = models.BooleanField(default=False)
+    locked_until = models.DateTimeField(null=True, blank=True)
+
+    def record_failure(self):
+        self.failed_attempts += 1
+        self.last_failed_at = timezone.now()
+
+        # Lock after 3 failed attempts
+        if self.failed_attempts >= 3:
+            self.is_locked = True
+            self.locked_until = timezone.now() + timedelta(minutes=10)
+            self.failed_attempts = 0  # reset attempts after lock
+
+        self.save()
+
+    def reset_attempts(self):
+        self.failed_attempts = 0
+        self.is_locked = False
+        self.locked_until = None
+        self.last_failed_at = None
+        self.save()
+
+    def can_login(self):
+        if self.is_locked:
+            if self.locked_until and timezone.now() >= self.locked_until:
+                self.reset_attempts()
+                return True
+            return False
+        return True

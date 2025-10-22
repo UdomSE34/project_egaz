@@ -23,9 +23,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-(3a3^x(l^epb+eh3qk2+)r(9_wzuamb!e%ddi@j&cw$p4i-ox8'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -42,6 +42,8 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_celery_beat',
     'django_crontab',
+    'django_extensions',
+    
 ]
 
 MIDDLEWARE = [
@@ -53,6 +55,8 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # <-- Add this first
+    'django.middleware.common.CommonMiddleware',
+    'corsheaders.middleware.CorsMiddleware',  # MUST be high
     'django.middleware.common.CommonMiddleware',
 ]
 
@@ -120,6 +124,16 @@ CORS_ALLOWED_ORIGINS = [
 # Or for development only (not recommended for production):
 CORS_ALLOW_ALL_ORIGINS = True
 
+# If you want to allow all headers
+CORS_ALLOW_HEADERS = [
+    "authorization",
+    "content-type",
+    "accept",
+    "origin",
+    "x-csrftoken",
+    "x-requested-with",
+]
+
 CORS_ALLOW_METHODS = [
     'GET',
     'POST',
@@ -136,7 +150,7 @@ EMAIL_HOST = 'smtp.gmail.com'          # or your email provider
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'comodoosimba@gmail.com'
-EMAIL_HOST_PASSWORD = 'dxgs eqsw qjkw vxnm'  # Use App Password if Gmail
+EMAIL_HOST_PASSWORD = 'vrof wegz xvsl zrls'  # Use App Password if Gmail
 DEFAULT_FROM_EMAIL = 'comodoosimba@gmail.com'
 
 
@@ -200,3 +214,20 @@ import os
 # Where uploaded files are stored
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [BASE_DIR / 'templates'],  # Optional global templates
+        'APP_DIRS': True,  # ✅ Required to load templates inside each app
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]

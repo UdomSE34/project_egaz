@@ -17,10 +17,7 @@ from .services.salary_pdf_service import generate_salary_pdf
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .authentication import CustomTokenAuthentication
-
-
-
-
+from django.views.decorators.csrf import csrf_protect
 
 
 class HotelViewSet(viewsets.ModelViewSet):
@@ -28,18 +25,34 @@ class HotelViewSet(viewsets.ModelViewSet):
     serializer_class = HotelSerializer
     authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
     permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .models import PendingHotel, Hotel
+from .serializers import PendingHotelSerializer
+from .utils import (
+    send_hotel_created_email,
+    send_hotel_approved_email,
+    send_hotel_rejected_email,
+)
+from .authentication import CustomTokenAuthentication
+
 
 class PendingHotelViewSet(viewsets.ModelViewSet):
     queryset = PendingHotel.objects.all()
     serializer_class = PendingHotelSerializer
-    authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
-    permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
-    # Hakuna authentication/permissions
+    authentication_classes = [CustomTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        hotel = serializer.save()
+        send_hotel_created_email(hotel)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         pending = self.get_object()
-        Hotel.objects.create(
+        hotel = Hotel.objects.create(
             client=pending.client,
             name=pending.name,
             address=pending.address,
@@ -53,20 +66,27 @@ class PendingHotelViewSet(viewsets.ModelViewSet):
             currency=pending.currency,
             payment_account=pending.payment_account,
         )
+
         pending.status = "approved"
         pending.save()
-        return Response({"message": "Hotel approved and added to hotels."}, status=200)
+
+        send_hotel_approved_email(hotel)
+        return Response({"message": "Hotel approved and email sent."}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         pending = self.get_object()
         pending.status = "rejected"
         pending.save()
-        return Response({"message": "Hotel rejected."}, status=200)
+        send_hotel_rejected_email(pending)
+        return Response({"message": "Hotel rejected and email sent."}, status=status.HTTP_200_OK)
+    
+
     
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+
 class UserViewSet(viewsets.ModelViewSet):
     """
     API endpoint for managing users.
@@ -77,6 +97,7 @@ class UserViewSet(viewsets.ModelViewSet):
     authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
     permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
 
+    
     @action(detail=True, methods=["patch"], url_path="submit_comment")
     def submit_comment(self, request, pk=None):
         """
@@ -195,6 +216,7 @@ class ClientViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
     
     # Custom registration action
+    @csrf_protect
     @action(detail=False, methods=['post'], url_path='register')
     def register_client(self, request):
         serializer = self.get_serializer(data=request.data)
@@ -231,25 +253,93 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
     queryset = WorkShift.objects.all()
     serializer_class = WorkShiftSerializer
     authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
-    permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
+    permission_classes = [IsAuthenticated] # Only authenticated users/clients can access
+   
+    
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import status, viewsets
+from rest_framework.permissions import IsAuthenticated
+from .authentication import CustomTokenAuthentication
+from .models import Schedule
+from .serializers import ScheduleSerializer
+from .utils import send_apology_email
+from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class ScheduleViewSet(viewsets.ModelViewSet):
     queryset = Schedule.objects.all()
     serializer_class = ScheduleSerializer
-    authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
-    permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
+    authentication_classes = [CustomTokenAuthentication]
+    permission_classes = [IsAuthenticated]
     lookup_field = "schedule_id"
 
+    # ✅ Update visibility for all schedules of a hotel (by hotel ID)
     @action(detail=False, methods=["patch"])
     def update_visibility_by_hotel(self, request):
-        hotel_name = request.data.get("hotel_name")
+        hotel_id = request.data.get("hotel_id")
         is_visible = request.data.get("is_visible", True)
 
-        if not hotel_name:
-            return Response({"error": "hotel_name required"}, status=400)
+        if not hotel_id:
+            return Response({"error": "hotel_id required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        updated = Schedule.objects.filter(hotel__name=hotel_name).update(is_visible=is_visible)
-        return Response({"updated": updated, "hotel_name": hotel_name, "is_visible": is_visible})
+        updated = Schedule.objects.filter(hotel__id=hotel_id).update(is_visible=is_visible)
+        return Response(
+            {"updated": updated, "hotel_id": hotel_id, "is_visible": is_visible},
+            status=status.HTTP_200_OK
+        )
+
+    # ✅ Send today’s apology messages (by hotel ID)
+    @action(detail=False, methods=["post"])
+    def send_today_message(self, request):
+        today_name = datetime.now().strftime('%A')
+        hotel_id = request.data.get("hotel_id")
+
+        qs = Schedule.objects.filter(status="Pending", day=today_name)
+        if hotel_id:
+            qs = qs.filter(hotel__id=hotel_id)
+
+        sent_count = 0
+        sent_hotels = []
+
+        for schedule in qs:
+            if send_apology_email(schedule, "today"):
+                sent_count += 1
+                sent_hotels.append(schedule.hotel.name)
+                logger.info(f"Today's apology sent to hotel ID {schedule.hotel.hotel_id}: {schedule.hotel.name}")
+
+        return Response(
+            {"message": f"{sent_count} apology emails sent for today.", "hotels": sent_hotels},
+            status=status.HTTP_200_OK
+        )
+
+    # ✅ Send tomorrow’s apology messages (by hotel ID)
+    @action(detail=False, methods=["post"])
+    def send_tomorrow_message(self, request):
+        tomorrow_name = (datetime.now() + timedelta(days=1)).strftime('%A')
+        hotel_id = request.data.get("hotel_id")
+
+        qs = Schedule.objects.filter(status="Pending", day=tomorrow_name)
+        if hotel_id:
+            qs = qs.filter(hotel__id=hotel_id)
+
+        sent_count = 0
+        sent_hotels = []
+
+        for schedule in qs:
+            if send_apology_email(schedule, "tomorrow"):
+                sent_count += 1
+                sent_hotels.append(schedule.hotel.name)
+                logger.info(f"Tomorrow's apology sent to hotel ID {schedule.hotel.hotel_id}: {schedule.hotel.name}")
+
+        return Response(
+            {"message": f"{sent_count} apology emails sent for tomorrow.", "hotels": sent_hotels},
+            status=status.HTTP_200_OK
+        )
+
     
 from rest_framework import viewsets, serializers
 from rest_framework.decorators import action
@@ -272,7 +362,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        Fetch notifications for inbox or outbox.
+        Fallback: support query params for inbox/outbox.
         Broadcast messages (recipient=None) appear in inbox.
         """
         recipient_type = self.request.query_params.get("recipient_type")
@@ -280,7 +370,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
         sender_type = self.request.query_params.get("sender_type")
         sender_id_str = self.request.query_params.get("sender_id")
 
-        # Inbox
+        # Inbox (direct + broadcasts)
         if recipient_type and recipient_id_str:
             try:
                 recipient_id = uuid.UUID(recipient_id_str)
@@ -288,15 +378,22 @@ class NotificationViewSet(viewsets.ModelViewSet):
                 return Notification.objects.none()
 
             try:
-                recipient = User.objects.get(user_id=recipient_id) if recipient_type == "User" else Client.objects.get(client_id=recipient_id)
+                recipient = (
+                    User.objects.get(user_id=recipient_id)
+                    if recipient_type == "User"
+                    else Client.objects.get(client_id=recipient_id)
+                )
             except (User.DoesNotExist, Client.DoesNotExist):
                 return Notification.objects.none()
 
             content_type = ContentType.objects.get_for_model(recipient.__class__)
             return Notification.objects.filter(
-                models.Q(recipient_content_type=content_type, recipient_object_id=recipient.pk) |
-                models.Q(recipient_content_type__isnull=True)  # broadcast messages
-            ).order_by('-created_time')
+                models.Q(
+                    recipient_content_type=content_type,
+                    recipient_object_id=recipient.pk
+                )
+                | models.Q(recipient_content_type__isnull=True)  # include broadcasts
+            ).order_by("-created_time")
 
         # Outbox
         if sender_type and sender_id_str:
@@ -306,7 +403,11 @@ class NotificationViewSet(viewsets.ModelViewSet):
                 return Notification.objects.none()
 
             try:
-                sender = User.objects.get(user_id=sender_id) if sender_type == "User" else Client.objects.get(client_id=sender_id)
+                sender = (
+                    User.objects.get(user_id=sender_id)
+                    if sender_type == "User"
+                    else Client.objects.get(client_id=sender_id)
+                )
             except (User.DoesNotExist, Client.DoesNotExist):
                 return Notification.objects.none()
 
@@ -314,10 +415,11 @@ class NotificationViewSet(viewsets.ModelViewSet):
             return Notification.objects.filter(
                 sender_content_type=content_type,
                 sender_object_id=sender.pk
-            ).order_by('-created_time')
+            ).order_by("-created_time")
 
         return Notification.objects.none()
-
+    
+    @csrf_protect
     def perform_create(self, serializer):
         """
         Create direct messages or broadcast messages.
@@ -330,7 +432,9 @@ class NotificationViewSet(viewsets.ModelViewSet):
         message_content = data.get("message_content")
 
         if not sender_type or not sender_id or not message_content:
-            raise serializers.ValidationError("sender_type, sender_id, and message_content are required.")
+            raise serializers.ValidationError(
+                "sender_type, sender_id, and message_content are required."
+            )
 
         # Normalize recipient_id for broadcast
         if recipient_id in (None, "", "null"):
@@ -339,14 +443,20 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
         # Resolve sender
         try:
-            sender = User.objects.get(user_id=sender_id) if sender_type == "User" else Client.objects.get(client_id=sender_id)
+            sender = (
+                User.objects.get(user_id=sender_id)
+                if sender_type == "User"
+                else Client.objects.get(client_id=sender_id)
+            )
         except (User.DoesNotExist, Client.DoesNotExist):
             raise serializers.ValidationError({"sender_id": "Invalid sender ID"})
 
         # Broadcast message
         if recipient_id is None:
             if not isinstance(sender, Client):
-                raise serializers.ValidationError("Only Clients can send broadcast messages")
+                raise serializers.ValidationError(
+                    "Only Clients can send broadcast messages"
+                )
             serializer.save(
                 sender_content_type=ContentType.objects.get_for_model(sender.__class__),
                 sender_object_id=sender.pk,
@@ -357,25 +467,89 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
         # Direct message
         if not recipient_type:
-            raise serializers.ValidationError({"recipient_type": "recipient_type is required for direct messages"})
+            raise serializers.ValidationError(
+                {"recipient_type": "recipient_type is required for direct messages"}
+            )
 
         try:
-            recipient = User.objects.get(user_id=recipient_id) if recipient_type == "User" else Client.objects.get(client_id=recipient_id)
+            recipient = (
+                User.objects.get(user_id=recipient_id)
+                if recipient_type == "User"
+                else Client.objects.get(client_id=recipient_id)
+            )
         except (User.DoesNotExist, Client.DoesNotExist):
             raise serializers.ValidationError({"recipient_id": "Invalid recipient ID"})
 
         # Business rules
-        if isinstance(sender, Client) and not (isinstance(recipient, User) and recipient.role in ["Staff", "Admin"]):
+        if isinstance(sender, Client) and not (
+            isinstance(recipient, User) and recipient.role in ["Staff", "Admin"]
+        ):
             raise serializers.ValidationError("Clients can only message Staff/Admin")
-        if isinstance(sender, User) and sender.role == "Staff" and not isinstance(recipient, Client):
+
+        if isinstance(sender, User) and sender.role == "Staff" and not isinstance(
+            recipient, Client
+        ):
             raise serializers.ValidationError("Staff can only message Clients")
 
         serializer.save(
             sender_content_type=ContentType.objects.get_for_model(sender.__class__),
             sender_object_id=sender.pk,
-            recipient_content_type=ContentType.objects.get_for_model(recipient.__class__),
+            recipient_content_type=ContentType.objects.get_for_model(
+                recipient.__class__
+            ),
             recipient_object_id=recipient.pk,
         )
+
+    @action(detail=False, methods=["get"])
+    def inbox(self, request):
+        """
+        Explicit inbox: includes direct messages and broadcasts.
+        GET /api/notifications/inbox/?user_id=<uuid>
+        """
+        user_id = request.query_params.get("user_id")
+        if not user_id:
+            return Response([], status=400)
+
+        try:
+            user = User.objects.get(user_id=user_id)
+        except User.DoesNotExist:
+            return Response([], status=404)
+
+        content_type = ContentType.objects.get_for_model(User)
+        queryset = Notification.objects.filter(
+            models.Q(
+                recipient_content_type=content_type,
+                recipient_object_id=user.pk
+            )
+            | models.Q(recipient_content_type__isnull=True)  # broadcasts
+        ).order_by("-created_time")
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def outbox(self, request):
+        """
+        Explicit outbox: all messages sent by this user/client.
+        GET /api/notifications/outbox/?user_id=<uuid>
+        """
+        user_id = request.query_params.get("user_id")
+        if not user_id:
+            return Response([], status=400)
+
+        try:
+            user = User.objects.get(user_id=user_id)
+        except User.DoesNotExist:
+            return Response([], status=404)
+
+        content_type = ContentType.objects.get_for_model(User)
+        queryset = Notification.objects.filter(
+            sender_content_type=content_type,
+            sender_object_id=user.pk
+        ).order_by("-created_time")
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["post"])
     def mark_as_read(self, request):
@@ -391,9 +565,13 @@ class NotificationViewSet(viewsets.ModelViewSet):
         except ValueError:
             return Response({"error": "Invalid UUID format"}, status=400)
 
-        updated_count = Notification.objects.filter(notification_id__in=uuids).update(status="Read")
-        return Response({"message": f"{updated_count} notification(s) marked as read"}, status=200)
-
+        updated_count = Notification.objects.filter(
+            notification_id__in=uuids
+        ).update(status="Read")
+        return Response(
+            {"message": f"{updated_count} notification(s) marked as read"},
+            status=200,
+        )
 
 class AlertViewSet(viewsets.ModelViewSet):
     queryset = Alert.objects.all()
@@ -433,8 +611,13 @@ def download_schedules_pdf(request):
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from django.views.decorators.csrf import csrf_exempt
+from rest_framework.response import Response
+from rest_framework import status
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
+from django.contrib.auth.hashers import check_password
+from .models import User, Client, AuthToken, FailedLoginAttempt
 
+@csrf_protect
 @csrf_exempt
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -445,10 +628,20 @@ def login_view(request):
     if not email or not password:
         return Response({"detail": "Email and password are required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 1️⃣ Try User login (Admin/Staff/Workers)
+    # --- 1️⃣ Try User login ---
     try:
         user = User.objects.get(email=email)
+        failed_tracker, _ = FailedLoginAttempt.objects.get_or_create(user=user)
+
+        if not failed_tracker.can_login():
+            remaining = (failed_tracker.locked_until - timezone.now()).seconds // 60 + 1
+            return Response(
+                {"detail": f"Account locked. Try again in {remaining} minutes."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         if check_password(password, user.password_hash):
+            failed_tracker.reset_attempts()
             token_obj, created = AuthToken.objects.get_or_create(user=user, client=None)
             return Response({
                 "token": token_obj.token,
@@ -459,14 +652,30 @@ def login_view(request):
                     "role": user.role
                 }
             })
-        return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+        else:
+            failed_tracker.record_failure()
+            attempts_left = 3 - failed_tracker.failed_attempts
+            return Response(
+                {"detail": f"Invalid credentials. Attempts left: {attempts_left}"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
     except User.DoesNotExist:
         pass
 
-    # 2️⃣ Try Client login
+    # --- 2️⃣ Try Client login ---
     try:
         client = Client.objects.get(email=email)
+        failed_tracker, _ = FailedLoginAttempt.objects.get_or_create(client=client)
+
+        if not failed_tracker.can_login():
+            remaining = (failed_tracker.locked_until - timezone.now()).seconds // 60 + 1
+            return Response(
+                {"detail": f"Account locked. Try again in {remaining} minutes."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         if check_password(password, client.password):
+            failed_tracker.reset_attempts()
             token_obj, created = AuthToken.objects.get_or_create(user=None, client=client)
             return Response({
                 "token": token_obj.token,
@@ -477,7 +686,13 @@ def login_view(request):
                     "role": "client"
                 }
             })
-        return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+        else:
+            failed_tracker.record_failure()
+            attempts_left = 3 - failed_tracker.failed_attempts
+            return Response(
+                {"detail": f"Invalid credentials. Attempts left: {attempts_left}"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
     except Client.DoesNotExist:
         return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -718,28 +933,59 @@ class UserNotificationViewSet(viewsets.ModelViewSet):
         user.receive_email_notifications = request.data.get('receive_email_notifications', False)
         user.save()
         return Response({'success': True, 'receive_email_notifications': user.receive_email_notifications})
-    
 
-
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, status
+from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
 from .models import PaymentSlip
 from .serializers import PaymentSlipSerializer
-from .authentication import CustomTokenAuthentication  # your custom auth
-from rest_framework.parsers import MultiPartParser, FormParser
+from .authentication import CustomTokenAuthentication
 
 class PaymentSlipViewSet(viewsets.ModelViewSet):
     queryset = PaymentSlip.objects.all().select_related('client')
     serializer_class = PaymentSlipSerializer
     authentication_classes = [CustomTokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]  # allow file upload
+    parser_classes = [MultiPartParser, FormParser]
+    lookup_field = "slip_id"
 
-    def perform_create(self, serializer):
-        # Automatically attach the logged-in client if needed
-        if hasattr(self.request.user, 'client'):  # assuming user has client attribute
-            serializer.save(client=self.request.user.client)
-        else:
-            serializer.save()
+    def update(self, request, *args, **kwargs):
+        """Allow admin to update receipt, comment, and amount for a payment slip."""
+        try:
+            slip = self.get_object()
+        except PaymentSlip.DoesNotExist:
+            return Response({"error": "Payment slip not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Update receipt if provided
+        receipt = request.FILES.get("receipt")
+        if receipt:
+            slip.receipt = receipt
+
+        # Update admin comment if provided
+        admin_comment = request.data.get("admin_comment")
+        if admin_comment is not None:
+            slip.admin_comment = admin_comment
+
+        # Update amount if provided
+        amount = request.data.get("amount")
+        if amount is not None:
+            try:
+                slip.amount = float(amount)
+            except ValueError:
+                return Response({"error": "Invalid amount value"}, status=status.HTTP_400_BAD_REQUEST)
+
+        slip.save()
+        return Response(
+            {
+                "message": "Slip updated successfully.",
+                "slip_id": str(slip.slip_id),
+                "receipt_url": slip.receipt.url if slip.receipt else None,
+                "admin_comment": slip.admin_comment,
+                "amount": slip.amount,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 
 # views.py
@@ -764,3 +1010,110 @@ def view_payment_slip(request, slip_id):
         return response
     except PaymentSlip.DoesNotExist:
         raise Http404("Slip not found")
+
+
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .models import PaymentSlip
+from .serializers import PaymentSlipSerializer
+from .authentication import CustomTokenAuthentication  # your custom auth
+
+class PaymentSlipViewSet(viewsets.ModelViewSet):
+    queryset = PaymentSlip.objects.all()
+    serializer_class = PaymentSlipSerializer
+    authentication_classes = [CustomTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Partially update a PaymentSlip instance.
+        Only fields sent in the request will be updated.
+        """
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+
+from datetime import datetime
+from django.db.models import Sum, F
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .models import Hotel, MonthlyHotelSummary, CompletedWasteRecord, PaymentSlip
+from .serializers import MonthlyHotelDashboardSerializer
+from .authentication import CustomTokenAuthentication  # your custom token auth
+
+
+class MonthlyHotelSummaryViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing monthly hotel summaries with actual and processed values.
+    """
+    queryset = MonthlyHotelSummary.objects.all()
+    serializer_class = MonthlyHotelDashboardSerializer
+    authentication_classes = [CustomTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['get'])
+    def month_summary(self, request):
+        """
+        Returns all monthly summaries for a given month.
+        Auto-generates missing summaries for all hotels.
+        Query param: month=YYYY-MM
+        """
+        month_str = request.query_params.get('month')
+        if not month_str:
+            return Response({"error": "Month is required (YYYY-MM)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            year, month = map(int, month_str.split('-'))
+            month_date = datetime(year, month, 1).date()
+        except ValueError:
+            return Response({"error": "Invalid month format. Use YYYY-MM."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Auto-generate summaries for all hotels
+        MonthlyHotelSummary.generate_for_month(month_date)
+
+        # Fetch summaries for the month
+        summaries = MonthlyHotelSummary.objects.filter(month=month_date)
+        serializer = self.get_serializer(summaries, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'])
+    def generate_summaries(self, request):
+        """
+        Generate monthly summaries for all hotels for a given month.
+        Expects JSON: { "month": "YYYY-MM" }
+        """
+        month_str = request.data.get("month")
+        if not month_str:
+            return Response({"error": "Month is required (YYYY-MM)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            year, month = map(int, month_str.split('-'))
+            month_date = datetime(year, month, 1).date()
+        except ValueError:
+            return Response({"error": "Invalid month format. Use YYYY-MM."}, status=status.HTTP_400_BAD_REQUEST)
+
+        summaries = MonthlyHotelSummary.generate_for_month(month_date)
+        serializer = self.get_serializer(summaries, many=True)
+        return Response({
+            "message": "Monthly summaries generated successfully",
+            "summaries": serializer.data
+        }, status=status.HTTP_200_OK)
+
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Update processed totals (total_waste_litres or total_amount_paid) for a summary
+        """
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+

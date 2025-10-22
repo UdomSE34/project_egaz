@@ -15,7 +15,7 @@ router.register(r'schedules', ScheduleViewSet)
 router.register(r'notifications', NotificationViewSet)
 router.register(r'alerts', AlertViewSet)
 router.register(r'completed-waste-records', CompletedWasteRecordViewSet)
-router.register(r'payment-slips', PaymentSlipViewSet)
+router.register(r'payment-slips', PaymentSlipViewSet, basename='paymentslip')
 
 # Salary & Attendance
 router.register(r'salary/users-with-salaries', UserWithSalaryViewSet, basename='user-with-salary')
@@ -24,7 +24,7 @@ router.register(r'salary/attendance', AttendanceViewSet, basename='attendance')
 router.register(r'salary/salaries', SalaryViewSet, basename='salary')
 router.register(r'paid-hotels', PaidHotelInfoViewSet, basename='paid-hotel')
 router.register(r'user-notifications', UserNotificationViewSet, basename='user-notifications')
-
+router.register(r'monthly-summaries', MonthlyHotelSummaryViewSet, basename='monthly-summary')
 
 urlpatterns = [
     path('', include(router.urls)),

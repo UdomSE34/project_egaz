@@ -1,0 +1,12 @@
+{{ title }}
+
+Hotel Name: {{ hotel_name }}
+Address: {{ address }}
+Contact: {{ contact }}
+
+Message:
+{{ message }}
+
+---
+This is an automated message from FOSTER INVESTMENT LTD.
+Please do not reply directly to this email.

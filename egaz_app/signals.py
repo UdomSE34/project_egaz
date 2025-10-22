@@ -75,18 +75,66 @@ Operations Team
 # signals.py
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils.timezone import now
+from datetime import date
 from .models import Hotel, PaidHotelInfo
+
 @receiver(post_save, sender=Hotel)
 def create_paid_hotel_info(sender, instance, created, **kwargs):
     if created:
-        if not hasattr(instance, 'paid_info'):
-            PaidHotelInfo.objects.create(
-                hotel=instance,
-                name=instance.name,
-                address=instance.address,
-                contact_phone=instance.contact_phone,
-                hadhi=instance.hadhi,
-                currency=instance.currency,
-                payment_account=instance.payment_account,
-                status="Pending",  # default
-            )
+        today = now().date()
+        first_day_of_month = date(today.year, today.month, 1)
+
+        # Create a PaidHotelInfo for the current month
+        PaidHotelInfo.objects.get_or_create(
+            hotel=instance,
+            month=first_day_of_month,
+            defaults={
+                "name": instance.name,
+                "address": instance.address,
+                "contact_phone": instance.contact_phone,
+                "hadhi": instance.hadhi,
+                "currency": instance.currency,
+                "payment_account": instance.payment_account,
+                "status": "Unpaid",
+            }
+        )
+        
+        
+
+# signals.py
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from datetime import datetime
+from django.db.models import Sum
+from .models import Hotel, MonthlyHotelSummary, CompletedWasteRecord, PaymentSlip
+
+@receiver(post_save, sender=Hotel)
+def generate_summary_for_new_hotel(sender, instance, created, **kwargs):
+    if created and instance.client:
+        today = datetime.today()
+        month_date = today.replace(day=1).date()
+
+        # Actual Waste
+        actual_waste = CompletedWasteRecord.objects.filter(
+            schedule__hotel=instance,
+            created_at__year=month_date.year,
+            created_at__month=month_date.month
+        ).aggregate(total_litres=Sum('size_of_litres'))['total_litres'] or 0
+
+        # Actual Payment
+        actual_payment = PaymentSlip.objects.filter(
+            client=instance.client,
+            month_paid__year=month_date.year,
+            month_paid__month=month_date.month
+        ).aggregate(total_paid=Sum('amount'))['total_paid'] or 0
+
+        # Create or update summary
+        MonthlyHotelSummary.objects.update_or_create(
+            client=instance.client,
+            month=month_date,
+            defaults={
+                'total_waste_litres': actual_waste,
+                'total_amount_paid': actual_payment
+            }
+        )

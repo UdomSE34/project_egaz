@@ -23,10 +23,10 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/',include('egaz_app.urls')),
     path("download-schedules/", views.download_schedules_pdf, name="download_schedules_pdf"),
     path("login/", views.login_view, name="login"),
     path("payment-slips/<uuid:slip_id>/view/", views.view_payment_slip, name="view_payment_slip"),
+    path('api/',include('egaz_app.urls')),
 
     
 
