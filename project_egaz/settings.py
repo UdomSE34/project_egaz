@@ -40,9 +40,9 @@ INSTALLED_APPS = [
     'rest_framework',
     'egaz_app.apps.EgazAppConfig',
     'corsheaders',
-    'django_celery_beat',
-    'django_crontab',
-    'django_extensions',
+    # 'django_celery_beat',
+    # 'django_crontab',
+    # 'django_extensions',
     
 ]
 
