@@ -105,16 +105,18 @@ WSGI_APPLICATION = 'project_egaz.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'project_egaz',
-        'USER': 'postgres',
-        'PASSWORD': '123',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': r"D:\Backup\Development\Back-end\Django\project_egaz\project_egaz\project_egaz.db",
     }
 }
+
+
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # Your Vite frontend
