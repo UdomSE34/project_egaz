@@ -74,7 +74,9 @@ REST_FRAMEWORK = {
 # Only allow specific frontend origins
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "https://front.deploy.tz",
 ]
+
 
 # Allow cookies and credentials
 CORS_ALLOW_CREDENTIALS = True
@@ -105,22 +107,25 @@ WSGI_APPLICATION = 'project_egaz.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-from pathlib import Path
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'project_egaz',
+#         'USER': 'postgres',
+#         'PASSWORD': '123',
+#         'HOST': 'localhost',
+#         'PORT': '5432',
+#     }
+# }
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': r"D:\Backup\Development\Back-end\Django\project_egaz\project_egaz\project_egaz.db",
-    }
-}
-
-
+CSRF_TRUSTED_ORIGINS = [
+    'https://back.deploy.tz',
+]
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # Your Vite frontend
     "http://127.0.0.1:5173",
+    "https://front.deploy.tz",
 ]
 
 # Or for development only (not recommended for production):
@@ -165,6 +170,12 @@ DEFAULT_FROM_EMAIL = 'comodoosimba@gmail.com'
 #     ],
 # }
 
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'project_egaz.db',
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
