@@ -25,6 +25,7 @@ class UserSerializer(serializers.ModelSerializer):
             validated_data["password_hash"] = make_password(validated_data["password_hash"])
         return super().create(validated_data)
 
+
 class ClientSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
 

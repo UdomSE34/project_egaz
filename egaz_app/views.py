@@ -143,6 +143,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 {"error": "An internal error occurred.", "detail": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+            
 
     @action(detail=True, methods=['patch'], url_path='approve-action')
     def approve_action(self, request, pk=None):
@@ -207,29 +208,55 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-                      
-            
+
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+import secrets
+from datetime import datetime, timedelta
+
+from .models import Client, AuthToken
+from .serializers import ClientSerializer
+from .authentication import CustomTokenAuthentication
+
+
 class ClientViewSet(viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
-    authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
-    permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
-    
-    # Custom registration action
-    @csrf_protect
-    @action(detail=False, methods=['post'], url_path='register')
+    authentication_classes = [CustomTokenAuthentication]
+    permission_classes = [IsAuthenticated]  # default for all actions
+
+    # Disable default POST /api/clients/ to avoid unauthenticated creation
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Use /register/ endpoint to create clients."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+
+    # Registration endpoint
+    @action(detail=False, methods=['post'], url_path='register', permission_classes=[AllowAny])
     def register_client(self, request):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
-            client = serializer.save(role='client')  # ensure role is 'client'
-            return Response(
-                {
-                    'message': 'Client registered successfully',
-                    'client_id': client.client_id
-                },
-                status=status.HTTP_201_CREATED
+            client = serializer.save(role='client')  # Ensure role is 'client'
+
+            # Create auth token automatically
+            token = AuthToken.objects.create(
+                client=client,
+                token=secrets.token_hex(32),
+                expires_at=datetime.now() + timedelta(days=7)  # 7-day expiry
             )
+
+            return Response({
+                'message': 'Client registered successfully',
+                'client_id': client.client_id,
+                'token': token.token
+            }, status=status.HTTP_201_CREATED)
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+ 
 
 class WasteTypeViewSet(viewsets.ModelViewSet):
     queryset = WasteType.objects.all()

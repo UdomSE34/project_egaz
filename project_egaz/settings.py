@@ -24,8 +24,19 @@ SECRET_KEY = 'django-insecure-(3a3^x(l^epb+eh3qk2+)r(9_wzuamb!e%ddi@j&cw$p4i-ox8
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
+# DEBUG = True
 
 ALLOWED_HOSTS = ['*']
+
+# Use custom user model
+AUTH_USER_MODEL = 'egaz_app.User'
+
+
+import os
+from pathlib import Path
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 
 # Application definition
@@ -46,7 +57,9 @@ INSTALLED_APPS = [
     
 ]
 
+
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # <-- Add this first
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -54,20 +67,20 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',  # <-- Add this first
     'django.middleware.common.CommonMiddleware',
-    'corsheaders.middleware.CorsMiddleware',  # MUST be high
     'django.middleware.common.CommonMiddleware',
 ]
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
+        "egaz_app.authentication.CustomTokenAuthentication",  # token auth yako
+        "rest_framework.authentication.SessionAuthentication",  # optional, kwa admin site
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
 }
+
 
 # settings.py
 
@@ -110,13 +123,21 @@ WSGI_APPLICATION = 'project_egaz.wsgi.application'
 # DATABASES = {
 #     'default': {
 #         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'project_egaz',
+#         'NAME': 'project_egaz1',
 #         'USER': 'postgres',
 #         'PASSWORD': '123',
 #         'HOST': 'localhost',
 #         'PORT': '5432',
 #     }
 # }
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'project_egaz.db',
+    }
+}
+
 
 CSRF_TRUSTED_ORIGINS = [
     'https://back.deploy.tz',
@@ -129,7 +150,7 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 # Or for development only (not recommended for production):
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_ALL_ORIGINS = True
 
 # If you want to allow all headers
 CORS_ALLOW_HEADERS = [
@@ -161,21 +182,6 @@ EMAIL_HOST_PASSWORD = 'vrof wegz xvsl zrls'  # Use App Password if Gmail
 DEFAULT_FROM_EMAIL = 'comodoosimba@gmail.com'
 
 
-# REST_FRAMEWORK = {
-#     "DEFAULT_AUTHENTICATION_CLASSES": [
-#         "egaz_app.authentication.CustomTokenAuthentication",
-#     ],
-#     "DEFAULT_PERMISSION_CLASSES": [
-#         "rest_framework.permissions.IsAuthenticated",
-#     ],
-# }
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'project_egaz.db',
-    }
-}
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -222,11 +228,6 @@ CRONJOBS = [
     ('0 16 * * *', 'schedules.cron.daily_apology_job'),
 ]
 
-import os
-
-# Where uploaded files are stored
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 
 TEMPLATES = [

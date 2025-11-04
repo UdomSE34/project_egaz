@@ -102,12 +102,33 @@ class PendingHotel(models.Model):
     )
     submitted_at = models.DateTimeField(auto_now_add=True)
     
-# Users
 import uuid
 from django.db import models
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.contrib.auth.hashers import make_password, check_password
+from secrets import token_urlsafe
 
-class User(models.Model):
+
+# Custom User Manager
+class UserManager(BaseUserManager):
+    def create_user(self, email, password=None, **extra_fields):
+        if not email:
+            raise ValueError("Email ni lazima")
+        email = self.normalize_email(email)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password or "123456")
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('role', 'Admin')
+        return self.create_user(email, password, **extra_fields)
+
+
+# Custom User model
+class User(AbstractBaseUser, PermissionsMixin):
     user_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     email = models.EmailField(unique=True)
@@ -120,7 +141,6 @@ class User(models.Model):
 
     # Emergency contact
     emergency_contact_name = models.CharField(max_length=100, null=True, blank=True)
-
     RELATIONSHIP_CHOICES = [
         ("baba", "Baba"),
         ("mama", "Mama"),
@@ -135,7 +155,7 @@ class User(models.Model):
     )
     emergency_contact_phone = models.CharField(max_length=20, null=True, blank=True)
 
-    # Updated roles
+    # Roles
     ROLE_CHOICES = [
         ('Admin', 'Admin'),
         ('HR', 'HR'),
@@ -149,6 +169,7 @@ class User(models.Model):
     delete_comment = models.TextField(null=True, blank=True)
     finaldelete_comment = models.TextField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
+
     status = models.CharField(
         max_length=20,
         choices=[
@@ -161,19 +182,30 @@ class User(models.Model):
         default="active"
     )
     is_active = models.BooleanField(default=True)
-    receive_email_notifications = models.BooleanField(default=False)  # new field
+    is_staff = models.BooleanField(default=False)  # for admin
+    receive_email_notifications = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = UserManager()
+
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['name']
 
     def save(self, *args, **kwargs):
         if not self.password_hash or not self.password_hash.startswith('pbkdf2_'):
             self.password_hash = make_password(self.password_hash or "123456")
         super().save(*args, **kwargs)
 
+    def set_password(self, raw_password):
+        self.password_hash = make_password(raw_password)
+
     def check_password(self, raw_password):
         return check_password(raw_password, self.password_hash)
 
     def __str__(self):
         return f"{self.name} ({self.role})"
+
+
 
 # Waste Types
 class WasteType(models.Model):
@@ -315,6 +347,43 @@ class CompletedWasteRecord(models.Model):
         return f"{self.waste_type} - {self.number_of_dustbins} bins ({self.size_of_litres}L)"
     
     
+# class AuthToken(models.Model):
+#     token_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+#     token = models.CharField(
+#         max_length=64,
+#         unique=True,
+#         db_index=True,
+#         default=secrets.token_hex
+#     )
+#     user = models.ForeignKey(
+#         'User',
+#         null=True,
+#         blank=True,
+#         on_delete=models.CASCADE,
+#         related_name='auth_tokens'
+#     )
+#     client = models.ForeignKey(
+#         'Client',
+#         null=True,
+#         blank=True,
+#         on_delete=models.CASCADE,
+#         related_name='auth_tokens'
+#     )
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     expires_at = models.DateTimeField(null=True, blank=True)
+
+#     def __str__(self):
+#         return f"{self.user} - {self.token[:8]}..."
+    
+
+
+import uuid
+import secrets
+from datetime import timedelta
+from django.db import models
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+
 class AuthToken(models.Model):
     token_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     token = models.CharField(
@@ -340,9 +409,38 @@ class AuthToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Auth Token'
+        verbose_name_plural = 'Auth Tokens'
+
+    def clean(self):
+        # Ensure token has exactly one owner: user OR client
+        if self.user is None and self.client is None:
+            raise ValidationError("Token must be associated with a user or client.")
+        if self.user is not None and self.client is not None:
+            raise ValidationError("Token cannot be associated with both user and client.")
+
+    def save(self, *args, **kwargs):
+        # Call validation
+        self.clean()
+        # Set default expiry to 7 days if not provided
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(days=7)
+        # Generate a new token if empty
+        if not self.token:
+            self.token = secrets.token_hex(32)
+        super().save(*args, **kwargs)
+
+    def is_expired(self):
+        """Return True if token has expired."""
+        if self.expires_at:
+            return timezone.now() >= self.expires_at
+        return False
+
     def __str__(self):
-        return f"{self.user} - {self.token[:8]}..."
-    
+        owner = self.user or self.client
+        return f"{owner} - {self.token[:8]}..."
 
 
 class Attendance(models.Model):
