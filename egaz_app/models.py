@@ -582,99 +582,90 @@ class PaymentSlip(models.Model):
         return f"Payment Slip {self.slip_id} - {self.client.name}"
 
 
-
 import uuid
 from django.db import models
-from django.db.models import Sum
 from django.utils.timezone import now
-from django.db.models import Sum, F
+from django.db.models import Sum
 
-# Assuming Client model already exists
-# and PaymentSlip & CompletedWasteRecord models are defined as you provided
+class MonthlySummary(models.Model):
+    """
+    Stores aggregated info for all hotels per month:
+    - Total actual waste (from CompletedWasteRecord)
+    - Total processed waste (manually updated)
+    - Total actual payment (from PaymentSlip)
+    - Total processed payment (manually updated)
+    - Reports for processed waste & payment (PDF files)
+    """
 
-class MonthlyHotelSummary(models.Model):
-    """
-    Stores aggregated info per hotel per month:
-    - Total waste collected (in litres)
-    - Total money paid
-    """
     summary_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='monthly_summaries')
-    month = models.DateField()  # represents the first day of the month (e.g., 2025-10-01)
-    
-    total_waste_litres = models.FloatField(default=0.0)
-    total_amount_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
-    
-    # optional: timestamps
+    month = models.DateField(unique=True)  # first day of month (YYYY-MM-01)
+
+    # Aggregated totals
+    total_actual_waste = models.FloatField(default=0.0)
+    total_processed_waste = models.FloatField(default=0.0)
+    total_actual_payment = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    total_processed_payment = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+
+    # New fields for storing report files
+    processed_waste_report = models.FileField(
+        upload_to="monthly_reports/waste/", 
+        null=True, blank=True
+    )
+    processed_payment_report = models.FileField(
+        upload_to="monthly_reports/payment/", 
+        null=True, blank=True
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
-        unique_together = ('client', 'month')
         ordering = ['-month']
+        verbose_name = "Monthly Summary"
+        verbose_name_plural = "Monthly Summaries"
 
     def __str__(self):
-        return f"{self.client.name} - {self.month.strftime('%B %Y')}"
+        return f"Overall Summary - {self.month.strftime('%B %Y')}"
 
     @classmethod
     def generate_for_month(cls, month_date):
         """
-        Aggregate data for all hotels for a given month and save/update MonthlyHotelSummary.
+        Aggregate totals from CompletedWasteRecord and PaymentSlip
+        for a given month. Preserves manually updated processed totals.
         """
-        from .models import CompletedWasteRecord, PaymentSlip, Hotel
+        from .models import CompletedWasteRecord, PaymentSlip
 
-        # Aggregate waste per client via schedule → hotel → client
-        waste_agg = (
+        # Aggregate actual waste
+        actual_waste = (
             CompletedWasteRecord.objects
-            .filter(
-                created_at__year=month_date.year,
-                created_at__month=month_date.month
-            )
-            .values('schedule__hotel__client')
-            .annotate(total_litres=Sum(F('number_of_dustbins') * F('size_of_litres')))
+            .filter(created_at__year=month_date.year, created_at__month=month_date.month)
+            .aggregate(total=Sum('size_of_litres'))['total'] or 0
         )
 
-        # Aggregate payments per client
-        payments_agg = (
+        # Aggregate actual payments
+        actual_payment = (
             PaymentSlip.objects
-            .filter(
-                month_paid__year=month_date.year,
-                month_paid__month=month_date.month
-            )
-            .values('client')
-            .annotate(total_paid=Sum('amount'))
+            .filter(month_paid__year=month_date.year, month_paid__month=month_date.month)
+            .aggregate(total=Sum('amount'))['total'] or 0
         )
 
-        # Ensure every hotel client has a summary
-        hotels = Hotel.objects.filter(client__isnull=False)
-        for hotel in hotels:
-            cls.objects.get_or_create(
-                client=hotel.client,
-                month=month_date.replace(day=1),
-                defaults={
-                    'total_waste_litres': 0.0,
-                    'total_amount_paid': 0.0
-                }
-            )
+        # Fetch existing summary or create new one
+        summary, created = cls.objects.get_or_create(
+            month=month_date.replace(day=1)
+        )
 
-        # Merge waste and payments into MonthlyHotelSummary
-        for waste in waste_agg:
-            client_id = waste['schedule__hotel__client']
-            total_waste = waste['total_litres'] or 0.0
+        # Update actual totals
+        summary.total_actual_waste = actual_waste
+        summary.total_actual_payment = actual_payment
 
-            payment = next((p for p in payments_agg if p['client'] == client_id), None)
-            total_paid = payment['total_paid'] if payment else 0.0
+        # Only set processed totals if newly created
+        if created:
+            summary.total_processed_waste = 0
+            summary.total_processed_payment = 0
 
-            cls.objects.update_or_create(
-                client_id=client_id,
-                month=month_date.replace(day=1),
-                defaults={
-                    'total_waste_litres': total_waste,
-                    'total_amount_paid': total_paid
-                }
-            )
+        summary.save()
+        return summary
 
-        return cls.objects.filter(month=month_date.replace(day=1))
 
 
 # egaz_app/models.py

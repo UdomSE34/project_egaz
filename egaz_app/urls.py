@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework import routers
 from .views import *
+from . import views
 
 router = routers.DefaultRouter()
 router.register(r'hotels', HotelViewSet)
@@ -24,8 +25,15 @@ router.register(r'salary/attendance', AttendanceViewSet, basename='attendance')
 router.register(r'salary/salaries', SalaryViewSet, basename='salary')
 router.register(r'paid-hotels', PaidHotelInfoViewSet, basename='paid-hotel')
 router.register(r'user-notifications', UserNotificationViewSet, basename='user-notifications')
-router.register(r'monthly-summaries', MonthlyHotelSummaryViewSet, basename='monthly-summary')
+router.register(r'monthly-summaries', MonthlySummaryViewSet, basename='monthly-summary')
+
+
+router.register(r'public/hotels', PublicHotelViewSet, basename='public-hotels')
+router.register(r'public/monthly-summary', PublicMonthlySummaryViewSet, basename='public-monthly-summary')
+router.register(r'public/documents', PublicDocumentViewSet, basename='public-documents')
 
 urlpatterns = [
     path('', include(router.urls)),
+    path("reports/waste/", views.download_waste_report, name="waste_report"),
+    path("reports/payment/", views.download_payment_report, name="payment_report"),
 ]

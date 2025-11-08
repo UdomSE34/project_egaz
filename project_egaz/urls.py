@@ -27,9 +27,7 @@ urlpatterns = [
     path("login/", views.login_view, name="login"),
     path("payment-slips/<uuid:slip_id>/view/", views.view_payment_slip, name="view_payment_slip"),
     path('api/',include('egaz_app.urls')),
-
     
-
 ]
 
 if settings.DEBUG:
