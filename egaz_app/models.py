@@ -533,13 +533,7 @@ class PaymentSlip(models.Model):
 
     slip_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='payment_slips')
-    file = models.FileField(
-    upload_to='payment_slips/',   # folder within MEDIA_ROOT
-    max_length=500,               # optional, to allow longer filenames
-    null=True,                     # allow blank entries
-    blank=True,                    # allow form submissions without file
-     )
-
+    file = models.FileField(upload_to='payment_slips/')  # uploaded by client
     comment = models.TextField(blank=True, null=True)  # client's message
     month_paid = models.DateField()
     amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
@@ -550,6 +544,18 @@ class PaymentSlip(models.Model):
 
     def __str__(self):
         return f"Payment Slip {self.slip_id} - {self.client.name}"
+    
+    def get_absolute_url(self):
+        """Return full URL to the payment slip file"""
+        if self.file:
+            return f"https://back.deploy.tz{self.file.url}"
+        return ""
+    
+    def get_receipt_url(self):
+        """Return full URL to the receipt file"""
+        if self.receipt:
+            return f"https://back.deploy.tz{self.receipt.url}"
+        return ""
 
 
 import uuid
