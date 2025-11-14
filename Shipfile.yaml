@@ -1,8 +1,8 @@
 script: |
   pip install -r requirements.txt
-  apt-get update && apt-get install -y unzip
   python create_media_dirs.py
-  unzip -o media.zip -d .
+  python extract_media.py
   python manage.py makemigrations
   python manage.py migrate
+
 run: gunicorn project_egaz.wsgi:application --bind 0.0.0.0:8000
