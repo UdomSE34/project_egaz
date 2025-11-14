@@ -32,6 +32,8 @@ router.register(r'public/hotels', PublicHotelViewSet, basename='public-hotels')
 router.register(r'public/monthly-summary', PublicMonthlySummaryViewSet, basename='public-monthly-summary')
 router.register(r'public/documents', PublicDocumentViewSet, basename='public-documents')
 
+router.register(r'invoices', InvoiceViewSet, basename='invoice')
+
 urlpatterns = [
     path('', include(router.urls)),
     path("reports/waste/", views.download_waste_report, name="waste_report"),

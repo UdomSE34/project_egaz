@@ -58,18 +58,18 @@ INSTALLED_APPS = [
 ]
 
 
+
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',  # <-- Add this first
+    'corsheaders.middleware.CorsMiddleware',  # MUST BE FIRST
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
+    'django.middleware.common.CommonMiddleware',  # ONLY ONE
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.common.CommonMiddleware',
 ]
+
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -91,7 +91,8 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 
-# Allow cookies and credentials
+# Temporary for local development ONLY
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 # Remove CORS_ALLOW_ALL_ORIGINS = True
@@ -139,9 +140,8 @@ DATABASES = {
 }
 
 
-CSRF_TRUSTED_ORIGINS = [
-    'https://back.deploy.tz',
-]
+CSRF_TRUSTED_ORIGINS = ['https://front.deploy.tz', 'https://back.deploy.tz']
+
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # Your Vite frontend

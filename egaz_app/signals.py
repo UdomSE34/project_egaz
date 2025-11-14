@@ -101,3 +101,22 @@ def create_paid_hotel_info(sender, instance, created, **kwargs):
         )
         
         
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from .models import Hotel, Invoice, Client
+
+@receiver(post_save, sender=Hotel)
+def create_invoice_for_new_hotel(sender, instance, created, **kwargs):
+    if created:
+        # Hapa unachagua client default au logic ya client
+        default_client = Client.objects.first()  # Mfano
+        Invoice.objects.create(
+            hotel=instance,
+            client=default_client,
+            amount=0.0,
+            status='not_sent',
+            month=datetime.now().month,
+            year=datetime.now().year,
+            comment='Auto-generated invoice for new hotel'
+        )
+

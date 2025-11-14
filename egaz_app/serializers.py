@@ -378,3 +378,27 @@ class MonthlySummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = MonthlySummary
         fields = '__all__'
+
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    hotel_name = serializers.CharField(source='hotel.name', read_only=True)
+    client_name = serializers.CharField(source='client.name', read_only=True)
+
+    class Meta:
+        model = Invoice
+        fields = [
+            'invoice_id',
+            'hotel',
+            'hotel_name',
+            'client',
+            'client_name',
+            'month',
+            'year',  # hakujumuishwa hapo awali, kuongeza itasaidia frontend
+            'amount',
+            'status',
+            'is_received',
+            'comment',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['hotel_name', 'client_name']

@@ -131,7 +131,7 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
     user_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
-    email = models.EmailField(unique=True)
+    email = models.EmailField(unique=True, null=True, blank=True)
     phone = models.CharField(max_length=20)
     password_hash = models.TextField()
 
@@ -163,6 +163,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         ('Drivers', 'Drivers'),
         ('Staff', 'Staff'),
         ('Workers', 'Workers'),
+        ('Council', 'Council'),
     ]
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='Workers')
     suspend_comment = models.TextField(null=True, blank=True)
@@ -347,41 +348,11 @@ class CompletedWasteRecord(models.Model):
         return f"{self.waste_type} - {self.number_of_dustbins} bins ({self.size_of_litres}L)"
     
     
-# class AuthToken(models.Model):
-#     token_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-#     token = models.CharField(
-#         max_length=64,
-#         unique=True,
-#         db_index=True,
-#         default=secrets.token_hex
-#     )
-#     user = models.ForeignKey(
-#         'User',
-#         null=True,
-#         blank=True,
-#         on_delete=models.CASCADE,
-#         related_name='auth_tokens'
-#     )
-#     client = models.ForeignKey(
-#         'Client',
-#         null=True,
-#         blank=True,
-#         on_delete=models.CASCADE,
-#         related_name='auth_tokens'
-#     )
-#     created_at = models.DateTimeField(auto_now_add=True)
-#     expires_at = models.DateTimeField(null=True, blank=True)
-
-#     def __str__(self):
-#         return f"{self.user} - {self.token[:8]}..."
     
-
-
+    
 import uuid
 import secrets
-from datetime import timedelta
 from django.db import models
-from django.utils import timezone
 from django.core.exceptions import ValidationError
 
 class AuthToken(models.Model):
@@ -407,7 +378,6 @@ class AuthToken(models.Model):
         related_name='auth_tokens'
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -415,32 +385,26 @@ class AuthToken(models.Model):
         verbose_name_plural = 'Auth Tokens'
 
     def clean(self):
-        # Ensure token has exactly one owner: user OR client
+        """Ensure token has exactly one owner: either user OR client."""
         if self.user is None and self.client is None:
             raise ValidationError("Token must be associated with a user or client.")
         if self.user is not None and self.client is not None:
             raise ValidationError("Token cannot be associated with both user and client.")
 
     def save(self, *args, **kwargs):
-        # Call validation
+        """Save token — permanent, never expires."""
         self.clean()
-        # Set default expiry to 7 days if not provided
-        if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(days=7)
-        # Generate a new token if empty
+
+        # Generate a new token if missing
         if not self.token:
             self.token = secrets.token_hex(32)
-        super().save(*args, **kwargs)
 
-    def is_expired(self):
-        """Return True if token has expired."""
-        if self.expires_at:
-            return timezone.now() >= self.expires_at
-        return False
+        super().save(*args, **kwargs)
 
     def __str__(self):
         owner = self.user or self.client
         return f"{owner} - {self.token[:8]}..."
+
 
 
 class Attendance(models.Model):
@@ -449,7 +413,7 @@ class Attendance(models.Model):
         ("absent", "Absent"),
         ("sick", "Sick"),
         ("accident", "Accident"),
-        ("off", "Off"),   
+        ("off", "Off"),
     ]
 
     attendance_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -710,3 +674,85 @@ class FailedLoginAttempt(models.Model):
                 return True
             return False
         return True
+
+from django.db import models
+import uuid
+from datetime import datetime, date
+
+class Invoice(models.Model):
+    STATUS_CHOICES = [
+        ('not_sent', 'Not Sent'),
+        ('sent', 'Sent'),
+        ('processing', 'Processing'),
+        ('received', 'Received'),
+        ('approved', 'Approved'),
+    ]
+
+    invoice_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    hotel = models.ForeignKey('Hotel', on_delete=models.CASCADE, related_name='invoices')
+    client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='invoices')
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='not_sent')
+    comment = models.TextField(blank=True, null=True)
+
+    month = models.IntegerField(default=datetime.now().month)
+    year = models.IntegerField(default=datetime.now().year)
+
+    is_recurring = models.BooleanField(default=True)
+    is_received = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('hotel', 'month', 'year')  # avoid duplicate invoices for same month
+
+    def __str__(self):
+        return f"{self.hotel.name} - {self.month}/{self.year}"
+
+    def month_name(self):
+        return datetime(self.year, self.month, 1).strftime('%B')
+
+    @classmethod
+    def generate_for_month(cls, month_date=None):
+        """
+        Generate invoices for all hotels for a given month.
+        - If month_date is None, defaults to current month.
+        - Ensures each invoice has a valid client.
+        - Skips invoices that already exist (unique_together).
+        """
+        from .models import Hotel, Client  # import here to avoid circular import
+
+        if month_date is None:
+            month_date = date.today()
+
+        hotels = Hotel.objects.all()
+        created_invoices = []
+
+        # Get a fallback client in case hotel has no client
+        fallback_client = Client.objects.first()
+        if not fallback_client:
+            raise ValueError("No clients found in the database. Please create at least one client.")
+
+        for hotel in hotels:
+            # Assign client: hotel.client if exists, otherwise fallback
+            client = getattr(hotel, 'client', None) or fallback_client
+
+            invoice, created = cls.objects.get_or_create(
+                hotel=hotel,
+                month=month_date.month,
+                year=month_date.year,
+                defaults={
+                    'client': client,
+                    'amount': 0.0,
+                    'status': 'not_sent',
+                    'is_recurring': True,
+                    'is_received': False,
+                }
+            )
+            if created:
+                created_invoices.append(invoice)
+
+        return created_invoices
+
+

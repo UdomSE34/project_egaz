@@ -245,7 +245,7 @@ class ClientViewSet(viewsets.ModelViewSet):
             token = AuthToken.objects.create(
                 client=client,
                 token=secrets.token_hex(32),
-                expires_at=datetime.now() + timedelta(days=7)  # 7-day expiry
+                # expires_at=datetime.now() + timedelta(days=7)  # 7-day expiry
             )
 
             return Response({
@@ -618,36 +618,45 @@ class CompletedWasteRecordViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+
+from django.http import FileResponse
+from datetime import date, timedelta
+from io import BytesIO
+from egaz_app.models import Schedule
+from .services.pdf_service import PdfService  # hakikisha path hii inalingana na project yako
+
 def download_schedules_pdf(request):
-    today = date.today()
-    yesterday = today - timedelta(days=1)
+    # Retrieve all pending schedules
+    schedules = Schedule.objects.filter(status="Pending").select_related('hotel')
 
-    # Get all schedules where week_start_date is this week or last week
-    # This ensures we only check relevant schedules instead of all
-    relevant_weeks = [yesterday - timedelta(days=yesterday.weekday()),  # Monday of last week
-                      today - timedelta(days=today.weekday())]          # Monday of this week
+    # Generate PDF: last_two_days_only=True ensures we fetch only today and yesterday
+    pdf_bytes = PdfService.generate_pdf(schedules, last_two_days_only=True)
 
-    schedules = Schedule.objects.filter(week_start_date__in=relevant_weeks).select_related('hotel')
+    # Return as file response
+    pdf_stream = BytesIO(pdf_bytes)
+    return FileResponse(
+        pdf_stream,
+        as_attachment=True,
+        filename="today_yesterday_schedules.pdf",
+        content_type="application/pdf"
+    )
 
-    # Pass schedules to PDF service
-    pdf_bytes = PdfService.generate_pdf(schedules)
 
-    response = HttpResponse(pdf_bytes, content_type='application/pdf')
-    response['Content-Disposition'] = 'attachment; filename="today_yesterday_schedules.pdf"'
-    return response
 
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.contrib.auth.hashers import check_password
+from django.utils import timezone
 from .models import User, Client, AuthToken, FailedLoginAttempt
+import secrets
 
-@csrf_protect
 @csrf_exempt
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def login_view(request):
     email = request.data.get('email')
     password = request.data.get('password')
@@ -655,7 +664,7 @@ def login_view(request):
     if not email or not password:
         return Response({"detail": "Email and password are required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    # --- 1️⃣ Try User login ---
+    # ---1️⃣ Try User login ---
     try:
         user = User.objects.get(email=email)
         failed_tracker, _ = FailedLoginAttempt.objects.get_or_create(user=user)
@@ -669,7 +678,12 @@ def login_view(request):
 
         if check_password(password, user.password_hash):
             failed_tracker.reset_attempts()
-            token_obj, created = AuthToken.objects.get_or_create(user=user, client=None)
+            # Always create or update token with new value
+            token_obj, _ = AuthToken.objects.update_or_create(
+                user=user,
+                client=None,
+                defaults={'token': secrets.token_hex(32)}
+            )
             return Response({
                 "token": token_obj.token,
                 "user": {
@@ -703,7 +717,12 @@ def login_view(request):
 
         if check_password(password, client.password):
             failed_tracker.reset_attempts()
-            token_obj, created = AuthToken.objects.get_or_create(user=None, client=client)
+            # Always create or update token with new value
+            token_obj, _ = AuthToken.objects.update_or_create(
+                user=None,
+                client=client,
+                defaults={'token': secrets.token_hex(32)}
+            )
             return Response({
                 "token": token_obj.token,
                 "user": {
@@ -722,6 +741,7 @@ def login_view(request):
             )
     except Client.DoesNotExist:
         return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
 
 
 class AttendanceViewSet(viewsets.ModelViewSet):
@@ -1224,3 +1244,211 @@ class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PublicDocumentSerializer
     permission_classes = [AllowAny]
 
+
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.http import HttpResponse
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.platypus import Table, TableStyle
+from datetime import date
+import calendar
+
+from egaz_app.models import Invoice
+from egaz_app.serializers import InvoiceSerializer
+
+
+class InvoiceViewSet(viewsets.ModelViewSet):
+    queryset = Invoice.objects.all()
+    serializer_class = InvoiceSerializer
+       
+    @action(detail=False, methods=['post'])
+    def generate_for_month(self, request):
+        """
+        Generate default invoices for all hotels for the given month/year.
+        Expects JSON: { "month": "2025-11" }  # YYYY-MM format
+        """
+        month_str = request.data.get("month")
+        if not month_str:
+            return Response({"detail": "Month is required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+        try:
+            dt = datetime.strptime(month_str, "%Y-%m")
+            month = dt.month
+            year = dt.year
+        except ValueError:
+            return Response({"detail": "Invalid month format. Use YYYY-MM."}, status=status.HTTP_400_BAD_REQUEST)
+
+        hotels = Hotel.objects.all()
+        created_count = 0
+
+        # Fallback client if hotel has no client
+        fallback_client = Client.objects.first()
+        if not fallback_client:
+            return Response({"detail": "No clients exist in the database. Please create at least one client."},
+                           status=status.HTTP_400_BAD_REQUEST)
+
+        for hotel in hotels:
+            client = getattr(hotel, 'client', None) or fallback_client
+
+            invoice, created = Invoice.objects.get_or_create(
+               hotel=hotel,
+               month=month,
+               year=year,
+               defaults={
+                   "client": client,
+                   "amount": 0,
+                   "status": "not_sent"
+                }
+            )
+            if created:
+                created_count += 1
+
+        return Response(
+            {"detail": f"{created_count} invoices generated for {month_str}"},
+            status=status.HTTP_201_CREATED
+        )
+        
+        
+    # 🔹 Admin: Kutuma invoice baada ya kuweka amount & month
+    @action(detail=True, methods=['post'])
+    def send_invoice(self, request, pk=None):
+        invoice = self.get_object()
+        amount = request.data.get('amount')
+        month = request.data.get('month')
+        year = request.data.get('year')
+
+        if amount:
+            invoice.amount = amount
+        if month:
+            invoice.month = int(month)
+        if year:
+            invoice.year = int(year)
+
+        invoice.status = 'sent'
+        invoice.save()
+
+        return Response({'message': 'Ankara imetumwa kikamilifu.', 'status': invoice.status}, status=status.HTTP_200_OK)
+
+    # 🔹 Kubadilisha status ya invoice manually
+    @action(detail=True, methods=['post'])
+    def update_status(self, request, pk=None):
+        invoice = self.get_object()
+        new_status = request.data.get('status')
+
+        if not new_status:
+            return Response({'error': 'Status haikutolewa'}, status=status.HTTP_400_BAD_REQUEST)
+
+        invoice.status = new_status
+        invoice.save()
+        return Response({'message': f'Status imebadilishwa kuwa {new_status}'}, status=status.HTTP_200_OK)
+
+
+    # 🔹 Kubadilisha status kuwa received na kudownload PDF
+    @action(detail=True, methods=["post"])
+    def mark_received_and_download(self, request, pk=None):
+        invoice = self.get_object()
+        comment = request.data.get("comment", "")
+
+        invoice.is_received = True
+        if comment:
+            invoice.comment = comment
+        invoice.save()
+
+        hotel_name = invoice.hotel.name if invoice.hotel else "—"
+
+        # Tafsiri mwezi unaofuata
+        next_month = invoice.month + 1 if invoice.month < 12 else 1
+        next_year = invoice.year if invoice.month < 12 else invoice.year + 1
+        next_month_name = calendar.month_name[next_month]
+        next_month_str = f"{next_month_name} {next_year}"
+
+        # ========== KUANDAA PDF ========== #
+        buffer = BytesIO()
+        p = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+
+        # HEADER
+        p.setFont("Helvetica-Bold", 16)
+        p.setFillColor(colors.HexColor("#003366"))
+        p.drawCentredString(width / 2, height - 50, "FORSTER INVESTMENT LTD")
+
+        p.setFont("Helvetica", 10)
+        p.setFillColor(colors.black)
+        p.drawCentredString(width / 2, height - 65, "P.O.BOX 1345, HOUSE KS KM 162 AIRPORT ROAD, ZANZIBAR – TANZANIA")
+        p.drawCentredString(width / 2, height - 80, "Barua Pepe: info@fosterinvestment.co.uk | Simu: +255 716 920 506 / +255 657 832 327")
+
+        p.line(40, height - 90, width - 40, height - 90)
+
+        # TITLE
+        p.setFont("Helvetica-Bold", 16)
+        p.setFillColor(colors.HexColor("#003366"))
+        p.drawCentredString(width / 2, height - 120, "TAARIFA YA MALIPO YA MWEZI")
+
+        p.setFont("Helvetica", 12)
+        p.drawCentredString(width / 2, height - 140, f"Kwa mwezi wa {next_month_str}")
+
+        # MESSAGE
+        p.setFont("Helvetica", 11)
+        p.drawString(
+            50,
+            height - 170,
+            f"Tunapenda kuwajulisha kuwa malipo kwa hoteli ya {hotel_name} kwa kipindi cha mwezi {next_month_str} "
+        )
+        p.drawString(
+            50,
+            height - 180,
+            f"yanapaswa kufanyika kama inavyoelezwa katika taarifa ifuatayo:"
+        )
+
+        # TABLE
+        table_data = [
+            ["Hoteli", "Mteja", "Mwezi/Mwaka", "Kiasi (TZS)", "Hali"],
+            [
+                hotel_name,
+                invoice.client.name if invoice.client else "—",
+                next_month_str,
+                f"{invoice.amount:,.2f}",
+                invoice.status.capitalize(),
+            ],
+        ]
+
+        table = Table(table_data, colWidths=[120, 120, 100, 100, 80])
+        style = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+            ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ])
+        table.setStyle(style)
+        table.wrapOn(p, width, height)
+        table.drawOn(p, 60, height - 250)
+
+        # FOOTER TEXT (Ujumbe wa shukrani)
+        p.setFont("Helvetica", 11)
+        p.drawString(50, height - 300, "Tunashukuru kwa kuendelea kutumia huduma zetu.")
+        p.drawString(50, height - 320, "Forster Investment Ltd inatamani mafanikio mema kwa biashara yako na inathamini ushirikiano wako.")
+
+        # FOOTER LINE
+        p.setStrokeColor(colors.grey)
+        p.line(40, 80, width - 40, 80)
+        p.setFont("Helvetica", 9)
+        p.setFillColor(colors.grey)
+        p.drawCentredString(width / 2, 65, "Imetolewa na Mfumo wa Forster Investment Ltd")
+        p.drawCentredString(width / 2, 50, f"© {date.today().year} Forster Investment Ltd - Haki Zote Zimehifadhiwa")
+
+        # SAVE PDF
+        p.showPage()
+        p.save()
+        buffer.seek(0)
+
+        response = HttpResponse(buffer, content_type="application/pdf")
+        response['Content-Disposition'] = f'attachment; filename=\"invoice_{invoice.invoice_id}.pdf\"'
+        return response
