@@ -35,7 +35,7 @@ AUTH_USER_MODEL = 'egaz_app.User'
 import os
 from pathlib import Path
 
-MEDIA_URL = 'https://back.deploy.tz/media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 
