@@ -533,7 +533,13 @@ class PaymentSlip(models.Model):
 
     slip_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='payment_slips')
-    file = models.FileField(upload_to='payment_slips/')  # uploaded by client
+    file = models.FileField(
+    upload_to='payment_slips/',   # folder within MEDIA_ROOT
+    max_length=500,               # optional, to allow longer filenames
+    null=True,                     # allow blank entries
+    blank=True,                    # allow form submissions without file
+     )
+
     comment = models.TextField(blank=True, null=True)  # client's message
     month_paid = models.DateField()
     amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)

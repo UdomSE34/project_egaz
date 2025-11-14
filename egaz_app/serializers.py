@@ -345,6 +345,32 @@ class UserNotificationSerializer(serializers.ModelSerializer):
         fields = ['user_id', 'name', 'email', 'role', 'receive_email_notifications']
         
         
+# # serializers.py
+# from rest_framework import serializers
+# from .models import PaymentSlip
+
+# class PaymentSlipSerializer(serializers.ModelSerializer):
+#     file_url = serializers.SerializerMethodField()
+#     receipt_url = serializers.SerializerMethodField()
+
+#     class Meta:
+#         model = PaymentSlip
+#         fields = "__all__"
+#         read_only_fields = ['slip_id', 'created_at']
+
+#     def get_file_url(self, obj):
+#         request = self.context.get("request")
+#         if obj.file and hasattr(obj.file, "url"):
+#             return request.build_absolute_uri(obj.file.url) if request else obj.file.url
+#         return None
+
+#     def get_receipt_url(self, obj):
+#         request = self.context.get("request")
+#         if obj.receipt and hasattr(obj.receipt, "url"):
+#             return request.build_absolute_uri(obj.receipt.url) if request else obj.receipt.url
+#         return None
+
+
 # serializers.py
 from rest_framework import serializers
 from .models import PaymentSlip
@@ -359,16 +385,29 @@ class PaymentSlipSerializer(serializers.ModelSerializer):
         read_only_fields = ['slip_id', 'created_at']
 
     def get_file_url(self, obj):
-        request = self.context.get("request")
-        if obj.file and hasattr(obj.file, "url"):
-            return request.build_absolute_uri(obj.file.url) if request else obj.file.url
+        if obj.file and hasattr(obj.file, "url") and obj.file.name:
+            request = self.context.get("request")
+            url = obj.file.url
+            if request:
+                url = request.build_absolute_uri(url)
+            # Force HTTPS
+            if url.startswith("http://"):
+                url = url.replace("http://", "https://", 1)
+            return url
         return None
 
     def get_receipt_url(self, obj):
-        request = self.context.get("request")
-        if obj.receipt and hasattr(obj.receipt, "url"):
-            return request.build_absolute_uri(obj.receipt.url) if request else obj.receipt.url
+        if obj.receipt and hasattr(obj.receipt, "url") and obj.receipt.name:
+            request = self.context.get("request")
+            url = obj.receipt.url
+            if request:
+                url = request.build_absolute_uri(url)
+            # Force HTTPS
+            if url.startswith("http://"):
+                url = url.replace("http://", "https://", 1)
+            return url
         return None
+
 
 
 from rest_framework import serializers

@@ -998,91 +998,108 @@ class PaymentSlipViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """Allow admin to update receipt, comment, and amount for a payment slip."""
-        try:
-            slip = self.get_object()
-        except PaymentSlip.DoesNotExist:
-            return Response({"error": "Payment slip not found."}, status=status.HTTP_404_NOT_FOUND)
+        slip = self.get_object()  # will raise 404 automatically if not found
 
         # Update receipt if provided
         receipt = request.FILES.get("receipt")
         if receipt:
+            # Optional: validate MIME type
+            if receipt.content_type not in ["application/pdf", "image/jpeg", "image/png"]:
+                return Response({"error": "Invalid file type. Only PDF and images allowed."}, 
+                                status=status.HTTP_400_BAD_REQUEST)
             slip.receipt = receipt
 
-        # Update admin comment if provided
+        # Update admin comment
         admin_comment = request.data.get("admin_comment")
         if admin_comment is not None:
             slip.admin_comment = admin_comment
 
-        # Update amount if provided
+        # Update amount
         amount = request.data.get("amount")
         if amount is not None:
             try:
                 slip.amount = float(amount)
             except ValueError:
-                return Response({"error": "Invalid amount value"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "Invalid amount value."}, status=status.HTTP_400_BAD_REQUEST)
 
-        slip.save()
-        return Response(
-            {
-                "message": "Slip updated successfully.",
-                "slip_id": str(slip.slip_id),
-                "receipt_url": slip.receipt.url if slip.receipt else None,
-                "admin_comment": slip.admin_comment,
-                "amount": slip.amount,
-            },
-            status=status.HTTP_200_OK,
-        )
+        # Save updates
+        try:
+            slip.save()
+        except Exception as e:
+            return Response({"error": f"Failed to update slip: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Return serialized object with proper URLs
+        serializer = self.get_serializer(slip, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 # views.py
-from django.http import HttpResponse, Http404
+import os
+import mimetypes
+from django.http import HttpResponse, HttpResponseForbidden, Http404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 from .models import PaymentSlip
-import mimetypes
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def view_payment_slip(request, slip_id):
     try:
         slip = PaymentSlip.objects.get(slip_id=slip_id)
-        if slip.client.id != request.user.id:
-            return Http404("Not allowed")
         
-        file_handle = slip.file.open("rb")
-        mime_type, _ = mimetypes.guess_type(slip.file.name)
-        response = HttpResponse(file_handle, content_type=mime_type)
-        response["Content-Disposition"] = "inline; filename=" + slip.file.name
-        return response
-    except PaymentSlip.DoesNotExist:
-        raise Http404("Slip not found")
+        # Check ownership
+        if slip.client.id != request.user.id:
+            return HttpResponseForbidden("You are not allowed to access this file.")
 
+        if not slip.file:
+            raise Http404("File not uploaded.")
+
+        # Open and serve file safely
+        with slip.file.open("rb") as f:
+            mime_type, _ = mimetypes.guess_type(slip.file.name)
+            response = HttpResponse(f.read(), content_type=mime_type or "application/octet-stream")
+            response["Content-Disposition"] = f'inline; filename="{os.path.basename(slip.file.name)}"'
+            return response
+
+    except PaymentSlip.DoesNotExist:
+        raise Http404("Payment slip not found")
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
 from .models import PaymentSlip
 from .serializers import PaymentSlipSerializer
-from .authentication import CustomTokenAuthentication  # your custom auth
+from .authentication import CustomTokenAuthentication
 
 class PaymentSlipViewSet(viewsets.ModelViewSet):
     queryset = PaymentSlip.objects.all()
     serializer_class = PaymentSlipSerializer
     authentication_classes = [CustomTokenAuthentication]
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # Add this for file uploads
 
     def partial_update(self, request, *args, **kwargs):
-        """
-        Partially update a PaymentSlip instance.
-        Only fields sent in the request will be updated.
-        """
         instance = self.get_object()
+
+        # Optional: check if user is owner or admin
+        if hasattr(request.user, "is_staff") and not request.user.is_staff:
+            if instance.client.id != request.user.id:
+                return Response({"detail": "Not allowed"}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # Return full file URLs
+        data = serializer.data
+        if instance.file:
+            data["file_url"] = instance.file.url
+        if instance.receipt:
+            data["receipt_url"] = instance.receipt.url
+
+        return Response(data, status=status.HTTP_200_OK)
    
 
 from datetime import datetime
