@@ -1083,19 +1083,21 @@ class PaymentSlipViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
    
-
 from datetime import datetime
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse, HttpResponseNotFound
 import os
 
 from .models import MonthlySummary
 from .serializers import MonthlySummarySerializer
-from .authentication import CustomTokenAuthentication  # replace with your auth class
+from .authentication import CustomTokenAuthentication
+from .reports.waste_report import generate_waste_pdf
+from .reports.payment_report import generate_payment_pdf
 
 class MonthlySummaryViewSet(viewsets.ModelViewSet):
     """
@@ -1111,12 +1113,22 @@ class MonthlySummaryViewSet(viewsets.ModelViewSet):
     authentication_classes = [CustomTokenAuthentication]
     permission_classes = [IsAuthenticated]
 
+    # 🔥 ADD: Lookup field for UUID
+    lookup_field = 'summary_id'
+    lookup_url_kwarg = 'summary_id'
+
     # --- Generate monthly summary (POST) ---
-    @action(detail=False, methods=['post'], url_path='generate_summaries')
-    def generate_summaries(self, request):
+    @action(detail=False, methods=['post'], url_path='generate-summary')
+    def generate_summary(self, request):
+        """
+        Generate summary for specific month
+        POST /api/monthly-summaries/generate-summary/
+        Body: {"month": "2024-01"}
+        """
         month_str = request.data.get('month')
         if not month_str:
             return Response({"error": "Month is required (YYYY-MM)."}, status=status.HTTP_400_BAD_REQUEST)
+        
         try:
             year, month = map(int, month_str.split('-'))
             month_date = datetime(year, month, 1).date()
@@ -1125,30 +1137,134 @@ class MonthlySummaryViewSet(viewsets.ModelViewSet):
 
         try:
             summary = MonthlySummary.generate_for_month(month_date)
+            serializer = self.get_serializer(summary)
+            return Response({
+                "message": f"Monthly summary generated for {month_date.strftime('%B %Y')}",
+                "summary": serializer.data
+            }, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": f"Failed to generate monthly summary: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        serializer = self.get_serializer(summary)
-        return Response({
-            "message": f"Monthly summary generated for {month_date.strftime('%B %Y')}",
-            "summary": serializer.data
-        }, status=status.HTTP_200_OK)
-
-    # --- Fetch monthly summary (GET) ---
-    @action(detail=False, methods=['get'], url_path='month_summary')
-    def month_summary(self, request):
+    # --- Fetch monthly summary by month (GET) ---
+    @action(detail=False, methods=['get'], url_path='by-month')
+    def by_month(self, request):
+        """
+        Get summary for specific month
+        GET /api/monthly-summaries/by-month/?month=2024-01
+        """
         month_str = request.query_params.get('month')
         if not month_str:
             return Response({"error": "Month is required (YYYY-MM)."}, status=status.HTTP_400_BAD_REQUEST)
+        
         try:
             year, month = map(int, month_str.split('-'))
             month_date = datetime(year, month, 1).date()
         except ValueError:
             return Response({"error": "Invalid month format. Use YYYY-MM."}, status=status.HTTP_400_BAD_REQUEST)
 
-        summaries = MonthlySummary.objects.filter(month=month_date)
-        serializer = self.get_serializer(summaries, many=True)
-        return Response({"summaries": serializer.data}, status=status.HTTP_200_OK)
+        try:
+            summary = MonthlySummary.objects.filter(month=month_date).first()
+            if not summary:
+                return Response({
+                    "message": f"No summary found for {month_date.strftime('%B %Y')}",
+                    "summary": None
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            serializer = self.get_serializer(summary)
+            return Response({
+                "summary": serializer.data
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to fetch monthly summary: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # --- List all summaries with filtering (GET) ---
+    def list(self, request, *args, **kwargs):
+        """
+        Get all summaries with optional year filter
+        GET /api/monthly-summaries/?year=2024
+        """
+        try:
+            year = request.query_params.get('year')
+            queryset = self.get_queryset()
+            
+            if year:
+                try:
+                    year_int = int(year)
+                    queryset = queryset.filter(month__year=year_int)
+                except ValueError:
+                    return Response({"error": "Invalid year format."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({
+                "count": queryset.count(),
+                "summaries": serializer.data
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to fetch summaries: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # --- Download uploaded report files (GET) ---
+    @action(detail=True, methods=['get'], url_path='download-waste-report')
+    def download_waste_report(self, request, summary_id=None):
+        """Download uploaded waste report file"""
+        return self._download_report('processed_waste_report')
+
+    @action(detail=True, methods=['get'], url_path='download-payment-report')
+    def download_payment_report(self, request, summary_id=None):
+        """Download uploaded payment report file"""
+        return self._download_report('processed_payment_report')
+
+    def _download_report(self, report_field):
+        """Helper method to download uploaded report files"""
+        try:
+            instance = self.get_object()
+            report_file = getattr(instance, report_field)
+            
+            if not report_file:
+                return HttpResponseNotFound("Report file not found")
+            
+            if not os.path.exists(report_file.path):
+                return HttpResponseNotFound("Report file not found on server")
+            
+            response = FileResponse(
+                open(report_file.path, 'rb'),
+                content_type='application/pdf'
+            )
+            filename = os.path.basename(report_file.name)
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+            
+        except Exception as e:
+            return Response({"error": f"Failed to download report: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # 🔥 NEW: Generate and download dynamic reports
+    @action(detail=False, methods=['get'], url_path='generate-waste-pdf')
+    def generate_waste_pdf(self, request):
+        """Generate and download dynamic waste report PDF"""
+        return self._generate_pdf_report(generate_waste_pdf, "waste_report")
+
+    @action(detail=False, methods=['get'], url_path='generate-payment-pdf')
+    def generate_payment_pdf(self, request):
+        """Generate and download dynamic payment report PDF"""
+        return self._generate_pdf_report(generate_payment_pdf, "payment_report")
+
+    def _generate_pdf_report(self, pdf_generator, report_type):
+        """Helper method to generate dynamic PDF reports"""
+        month_str = self.request.query_params.get('month')
+        if not month_str:
+            return HttpResponse("Month parameter is required (YYYY-MM)", status=400)
+        
+        try:
+            month = datetime.strptime(month_str, "%Y-%m").date().replace(day=1)
+        except ValueError:
+            return HttpResponse("Invalid month format. Use YYYY-MM", status=400)
+
+        try:
+            pdf_buffer = pdf_generator(month)
+            response = HttpResponse(pdf_buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{report_type}_{month_str}.pdf"'
+            return response
+        except Exception as e:
+            return Response({"error": f"Failed to generate {report_type}: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     # --- Update monthly summary (PATCH) ---
     def partial_update(self, request, *args, **kwargs):
@@ -1162,13 +1278,22 @@ class MonthlySummaryViewSet(viewsets.ModelViewSet):
         """
         try:
             instance = self.get_object()
+            
+            # Handle file uploads
+            if 'processed_waste_report' in request.FILES:
+                instance.processed_waste_report = request.FILES['processed_waste_report']
+            if 'processed_payment_report' in request.FILES:
+                instance.processed_payment_report = request.FILES['processed_payment_report']
+            
+            # Update other fields
             serializer = self.get_serializer(instance, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
-            serializer.save()
+            self.perform_update(serializer)
+            
             return Response(serializer.data, status=status.HTTP_200_OK)
+            
         except Exception as e:
             return Response({"error": f"Failed to update summary: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
-
 
 
 from django.http import HttpResponse
@@ -1207,11 +1332,10 @@ def download_payment_report(request):
     return response
 
 
-# views.py
-from rest_framework import viewsets
+from rest_framework import viewsets, serializers
+from rest_framework.permissions import AllowAny
 from .models import PaidHotelInfo, MonthlySummary
 from .serializers import PaidHotelInfoSerializer, MonthlySummarySerializer
-from rest_framework.permissions import AllowAny  # <-- No auth
 
 class PublicHotelViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PaidHotelInfo.objects.all()
@@ -1223,26 +1347,88 @@ class PublicMonthlySummaryViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = MonthlySummarySerializer
     permission_classes = [AllowAny]
 
+    # 🔥 OPTIONAL: Override to customize public data
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return PublicMonthlySummaryListSerializer
+        return MonthlySummarySerializer
 
-# views.py
-from rest_framework import viewsets, serializers
-from rest_framework.permissions import AllowAny
-from .models import MonthlySummary
-
-# Serializer specifically for public documents
+# 🔥 UPDATED: Public Document Serializer with URLs
 class PublicDocumentSerializer(serializers.ModelSerializer):
+    # 🔥 ADD: URL fields for easy frontend access
+    waste_report_url = serializers.SerializerMethodField()
+    payment_report_url = serializers.SerializerMethodField()
+    month_display = serializers.SerializerMethodField()
+
     class Meta:
         model = MonthlySummary
         fields = [
             'month',
+            'month_display',  # 🔥 ADD: Human readable month
             'processed_waste_report',
-            'processed_payment_report'
+            'processed_payment_report',
+            'waste_report_url',  # 🔥 ADD: Full URL
+            'payment_report_url',  # 🔥 ADD: Full URL
         ]
 
+    def get_waste_report_url(self, obj):
+        """Return full URL for waste report"""
+        return obj.get_waste_report_url()
+
+    def get_payment_report_url(self, obj):
+        """Return full URL for payment report"""
+        return obj.get_payment_report_url()
+
+    def get_month_display(self, obj):
+        """Return formatted month name"""
+        return obj.month.strftime('%B %Y') if obj.month else ""
+    
+# 🔥 OPTIONAL: Separate serializer for list view (minimal data)
+class PublicMonthlySummaryListSerializer(serializers.ModelSerializer):
+    month_display = serializers.SerializerMethodField()
+    has_waste_report = serializers.SerializerMethodField()
+    has_payment_report = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MonthlySummary
+        fields = [
+            'month',
+            'month_display',
+            'has_waste_report',
+            'has_payment_report',
+        ]
+
+    def get_month_display(self, obj):
+        return obj.month.strftime('%B %Y') if obj.month else ""
+
+    def get_has_waste_report(self, obj):
+        return bool(obj.processed_waste_report)
+
+    def get_has_payment_report(self, obj):
+        return bool(obj.processed_payment_report)
+
 class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = MonthlySummary.objects.all().order_by('-month')
+    """
+    Public endpoint for accessing monthly reports/documents
+    No authentication required
+    """
+    queryset = MonthlySummary.objects.exclude(
+        processed_waste_report__isnull=True,
+        processed_payment_report__isnull=True
+    ).order_by('-month')
     serializer_class = PublicDocumentSerializer
     permission_classes = [AllowAny]
+
+    # 🔥 OPTIONAL: Filter to only show months with reports
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # Only return summaries that have at least one report
+        return queryset.filter(
+            models.Q(processed_waste_report__isnull=False) |
+            models.Q(processed_payment_report__isnull=False)
+        ).distinct()
+
+
 
 
 from rest_framework import viewsets, status

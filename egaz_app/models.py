@@ -603,6 +603,27 @@ class MonthlySummary(models.Model):
     def __str__(self):
         return f"Overall Summary - {self.month.strftime('%B %Y')}"
 
+    # 🔥 NEW: Add these URL methods
+    def get_waste_report_url(self):
+        """Return full URL to the waste report file"""
+        if self.processed_waste_report:
+            return f"https://back.deploy.tz{self.processed_waste_report.url}"
+        return ""
+
+    def get_payment_report_url(self):
+        """Return full URL to the payment report file"""
+        if self.processed_payment_report:
+            return f"https://back.deploy.tz{self.processed_payment_report.url}"
+        return ""
+
+    # 🔥 OPTIONAL: Generic method for any file field
+    def get_file_url(self, field_name):
+        """Return full URL for any file field"""
+        file_field = getattr(self, field_name, None)
+        if file_field:
+            return f"https://back.deploy.tz{file_field.url}"
+        return ""
+
     @classmethod
     def generate_for_month(cls, month_date):
         """
@@ -641,7 +662,7 @@ class MonthlySummary(models.Model):
 
         summary.save()
         return summary
-
+    
 
 
 # egaz_app/models.py

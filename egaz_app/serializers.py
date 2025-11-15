@@ -370,15 +370,25 @@ class PaymentSlipSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.receipt.url) if request else obj.receipt.url
         return None
 
-
-from rest_framework import serializers
-from .models import MonthlySummary
-
 class MonthlySummarySerializer(serializers.ModelSerializer):
+    waste_report_url = serializers.SerializerMethodField()
+    payment_report_url = serializers.SerializerMethodField()
+    month_display = serializers.SerializerMethodField()
+
     class Meta:
         model = MonthlySummary
         fields = '__all__'
 
+    def get_waste_report_url(self, obj):
+        return obj.get_waste_report_url()
+
+    def get_payment_report_url(self, obj):
+        return obj.get_payment_report_url()
+
+    def get_month_display(self, obj):
+        return obj.month.strftime('%B %Y') if obj.month else ""
+    
+    
 
 class InvoiceSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source='hotel.name', read_only=True)

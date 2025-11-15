@@ -25,17 +25,25 @@ router.register(r'salary/attendance', AttendanceViewSet, basename='attendance')
 router.register(r'salary/salaries', SalaryViewSet, basename='salary')
 router.register(r'paid-hotels', PaidHotelInfoViewSet, basename='paid-hotel')
 router.register(r'user-notifications', UserNotificationViewSet, basename='user-notifications')
+
+# 🔥 FIXED: MonthlySummary with proper basename
 router.register(r'monthly-summaries', MonthlySummaryViewSet, basename='monthly-summary')
 
-
+# Public endpoints
 router.register(r'public/hotels', PublicHotelViewSet, basename='public-hotels')
 router.register(r'public/monthly-summary', PublicMonthlySummaryViewSet, basename='public-monthly-summary')
 router.register(r'public/documents', PublicDocumentViewSet, basename='public-documents')
 
+# Invoices
 router.register(r'invoices', InvoiceViewSet, basename='invoice')
 
 urlpatterns = [
     path('', include(router.urls)),
+    
+    # 🔥 OLD: Legacy report endpoints (keep for backward compatibility)
     path("reports/waste/", views.download_waste_report, name="waste_report"),
     path("reports/payment/", views.download_payment_report, name="payment_report"),
+    
+    # 🔥 NEW: Additional endpoints for MonthlySummary (if needed)
+    # These are already included in the ViewSet, but you can add custom ones here if needed
 ]
