@@ -1235,10 +1235,10 @@ def download_payment_report(request):
     return response
 
 
-from rest_framework import viewsets, serializers
-from rest_framework.permissions import AllowAny
+from rest_framework import viewsets
 from .models import PaidHotelInfo, MonthlySummary
 from .serializers import PaidHotelInfoSerializer, MonthlySummarySerializer
+from rest_framework.permissions import AllowAny
 
 class PublicHotelViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PaidHotelInfo.objects.all()
@@ -1249,88 +1249,6 @@ class PublicMonthlySummaryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = MonthlySummary.objects.all()
     serializer_class = MonthlySummarySerializer
     permission_classes = [AllowAny]
-
-    # 🔥 OPTIONAL: Override to customize public data
-    def get_serializer_class(self):
-        if self.action == 'list':
-            return PublicMonthlySummaryListSerializer
-        return MonthlySummarySerializer
-
-# 🔥 UPDATED: Public Document Serializer with URLs
-class PublicDocumentSerializer(serializers.ModelSerializer):
-    # 🔥 ADD: URL fields for easy frontend access
-    waste_report_url = serializers.SerializerMethodField()
-    payment_report_url = serializers.SerializerMethodField()
-    month_display = serializers.SerializerMethodField()
-
-    class Meta:
-        model = MonthlySummary
-        fields = [
-            'month',
-            'month_display',  # 🔥 ADD: Human readable month
-            'processed_waste_report',
-            'processed_payment_report',
-            'waste_report_url',  # 🔥 ADD: Full URL
-            'payment_report_url',  # 🔥 ADD: Full URL
-        ]
-
-    def get_waste_report_url(self, obj):
-        """Return full URL for waste report"""
-        return obj.get_waste_report_url()
-
-    def get_payment_report_url(self, obj):
-        """Return full URL for payment report"""
-        return obj.get_payment_report_url()
-
-    def get_month_display(self, obj):
-        """Return formatted month name"""
-        return obj.month.strftime('%B %Y') if obj.month else ""
-    
-# 🔥 OPTIONAL: Separate serializer for list view (minimal data)
-class PublicMonthlySummaryListSerializer(serializers.ModelSerializer):
-    month_display = serializers.SerializerMethodField()
-    has_waste_report = serializers.SerializerMethodField()
-    has_payment_report = serializers.SerializerMethodField()
-
-    class Meta:
-        model = MonthlySummary
-        fields = [
-            'month',
-            'month_display',
-            'has_waste_report',
-            'has_payment_report',
-        ]
-
-    def get_month_display(self, obj):
-        return obj.month.strftime('%B %Y') if obj.month else ""
-
-    def get_has_waste_report(self, obj):
-        return bool(obj.processed_waste_report)
-
-    def get_has_payment_report(self, obj):
-        return bool(obj.processed_payment_report)
-
-class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Public endpoint for accessing monthly reports/documents
-    No authentication required
-    """
-    queryset = MonthlySummary.objects.exclude(
-        processed_waste_report__isnull=True,
-        processed_payment_report__isnull=True
-    ).order_by('-month')
-    serializer_class = PublicDocumentSerializer
-    permission_classes = [AllowAny]
-
-    # 🔥 OPTIONAL: Filter to only show months with reports
-    def get_queryset(self):
-        queryset = super().get_queryset()
-        # Only return summaries that have at least one report
-        return queryset.filter(
-            models.Q(processed_waste_report__isnull=False) |
-            models.Q(processed_payment_report__isnull=False)
-        ).distinct()
-
 
 
 
