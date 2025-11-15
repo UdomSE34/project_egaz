@@ -372,7 +372,6 @@ class PaymentSlipSerializer(serializers.ModelSerializer):
 
 from rest_framework import serializers
 from .models import MonthlySummary
-
 class MonthlySummarySerializer(serializers.ModelSerializer):
     waste_report_url = serializers.SerializerMethodField()
     payment_report_url = serializers.SerializerMethodField()
@@ -418,8 +417,7 @@ class PublicMonthlySummarySerializer(serializers.ModelSerializer):
         try:
             return obj.month.strftime("%B %Y")
         except:
-            return ""
-            
+            return ""            
 
 class InvoiceSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source='hotel.name', read_only=True)

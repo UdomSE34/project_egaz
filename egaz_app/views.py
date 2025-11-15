@@ -1236,48 +1236,69 @@ def download_payment_report(request):
 
 from rest_framework import viewsets, serializers
 from rest_framework.permissions import AllowAny
-from django.db import models  # 🔥 ADD THIS IMPORT
+from django.db.models import Q
 from .models import PaidHotelInfo, MonthlySummary
-from .serializers import PaidHotelInfoSerializer, MonthlySummarySerializer
+from .serializers import PaidHotelInfoSerializer, PublicMonthlySummarySerializer
 
+# ------------------------------
+# Public Hotel Info ViewSet - ✅ SAWA
+# ------------------------------
 class PublicHotelViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PaidHotelInfo.objects.all()
     serializer_class = PaidHotelInfoSerializer
     permission_classes = [AllowAny]
 
+
+# ------------------------------
+# Public Monthly Summary ViewSet - ✅ SAWA
+# ------------------------------
 class PublicMonthlySummaryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = MonthlySummary.objects.all()
-    serializer_class = PublicMonthlySummarySerializer  # 🔑 use safe public serializer
+    serializer_class = PublicMonthlySummarySerializer
     permission_classes = [AllowAny]
 
 
-# 🔥 SIMPLE PUBLIC DOCUMENT SERIALIZER
+# ------------------------------
+# Public Document Serializer - 🔥 FIX THIS PART
+# ------------------------------
 class PublicDocumentSerializer(serializers.ModelSerializer):
     month_display = serializers.SerializerMethodField()
+    waste_report_url = serializers.SerializerMethodField()  # ✅ CORRECT NAME
+    payment_report_url = serializers.SerializerMethodField()  # ✅ CORRECT NAME
 
     class Meta:
         model = MonthlySummary
         fields = [
-            'month',
-            'month_display',
-            'processed_waste_report',
-            'processed_payment_report',
+            "month",
+            "month_display",
+            "waste_report_url",  # ✅ CORRECT FIELD NAME
+            "payment_report_url",  # ✅ CORRECT FIELD NAME
         ]
 
     def get_month_display(self, obj):
-        return obj.month.strftime('%B %Y') if obj.month else ""
+        return obj.month.strftime("%B %Y") if obj.month else ""
 
+    def get_waste_report_url(self, obj):  # ✅ CORRECT METHOD NAME
+        return obj.get_waste_report_url()
+
+    def get_payment_report_url(self, obj):  # ✅ CORRECT METHOD NAME
+        return obj.get_payment_report_url()
+
+
+# ------------------------------
+# Public Document ViewSet - ✅ SAWA
+# ------------------------------
 class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = PublicDocumentSerializer
+    serializer_class = PublicDocumentSerializer  # 🔥 NOW IT WILL WORK
     permission_classes = [AllowAny]
 
     def get_queryset(self):
-        from django.db.models import Q
         return MonthlySummary.objects.filter(
             Q(processed_waste_report__isnull=False) |
             Q(processed_payment_report__isnull=False)
         ).order_by('-month')
-
+        
+        
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action

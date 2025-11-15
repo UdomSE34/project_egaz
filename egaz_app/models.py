@@ -557,7 +557,6 @@ class PaymentSlip(models.Model):
             return f"https://back.deploy.tz{self.receipt.url}"
         return ""
 
-
 import uuid
 from django.db import models
 from django.utils.timezone import now
@@ -576,19 +575,19 @@ class MonthlySummary(models.Model):
     summary_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     month = models.DateField(unique=True)  # first day of month (YYYY-MM-01)
 
-    # Aggregated totals
+    # 🔥 CHANGED ALL TO FLOATFIELD - NO MORE DECIMALFIELD
     total_actual_waste = models.FloatField(default=0.0)
     total_processed_waste = models.FloatField(default=0.0)
-    total_actual_payment = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
-    total_processed_payment = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    total_actual_payment = models.FloatField(default=0.0)  # 🔥 CHANGED
+    total_processed_payment = models.FloatField(default=0.0)  # 🔥 CHANGED
 
-    # New fields for storing report files
+    # Fields for storing report files
     processed_waste_report = models.FileField(
-        upload_to="monthly_reports/waste/", 
+        upload_to="monthly_reports/waste/",
         null=True, blank=True
     )
     processed_payment_report = models.FileField(
-        upload_to="monthly_reports/payment/", 
+        upload_to="monthly_reports/payment/",
         null=True, blank=True
     )
 
@@ -603,22 +602,18 @@ class MonthlySummary(models.Model):
     def __str__(self):
         return f"Overall Summary - {self.month.strftime('%B %Y')}"
 
-    # 🔥 NEW: Add these URL methods
+    # URL methods
     def get_waste_report_url(self):
-        """Return full URL to the waste report file"""
         if self.processed_waste_report:
             return f"https://back.deploy.tz{self.processed_waste_report.url}"
         return ""
 
     def get_payment_report_url(self):
-        """Return full URL to the payment report file"""
         if self.processed_payment_report:
             return f"https://back.deploy.tz{self.processed_payment_report.url}"
         return ""
 
-    # 🔥 OPTIONAL: Generic method for any file field
     def get_file_url(self, field_name):
-        """Return full URL for any file field"""
         file_field = getattr(self, field_name, None)
         if file_field:
             return f"https://back.deploy.tz{file_field.url}"
@@ -636,15 +631,16 @@ class MonthlySummary(models.Model):
         actual_waste = (
             CompletedWasteRecord.objects
             .filter(created_at__year=month_date.year, created_at__month=month_date.month)
-            .aggregate(total=Sum('size_of_litres'))['total'] or 0
+            .aggregate(total=Sum('size_of_litres'))['total'] or 0.0
         )
 
-        # Aggregate actual payments
-        actual_payment = (
+        # Aggregate actual payments - SIMPLIFIED
+        total_payment = (
             PaymentSlip.objects
             .filter(month_paid__year=month_date.year, month_paid__month=month_date.month)
-            .aggregate(total=Sum('amount'))['total'] or 0
+            .aggregate(total=Sum('amount'))['total']
         )
+        actual_payment = float(total_payment or 0.0)  # 🔥 CHANGED TO FLOAT
 
         # Fetch existing summary or create new one
         summary, created = cls.objects.get_or_create(
@@ -653,16 +649,15 @@ class MonthlySummary(models.Model):
 
         # Update actual totals
         summary.total_actual_waste = actual_waste
-        summary.total_actual_payment = actual_payment
+        summary.total_actual_payment = actual_payment  # 🔥 NOW FLOAT
 
         # Only set processed totals if newly created
         if created:
-            summary.total_processed_waste = 0
-            summary.total_processed_payment = 0
+            summary.total_processed_waste = 0.0
+            summary.total_processed_payment = 0.0  # 🔥 NOW FLOAT
 
         summary.save()
-        return summary
-    
+        return summary    
 
 
 # egaz_app/models.py

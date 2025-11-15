@@ -29,7 +29,6 @@ router.register(r'user-notifications', UserNotificationViewSet, basename='user-n
 # 🔥 FIXED: MonthlySummary with proper basename
 router.register(r'monthly-summaries', MonthlySummaryViewSet, basename='monthly-summary')
 
-# 🔥 FIXED: Public endpoints with correct views
 router.register(r'public/hotels', PublicHotelViewSet, basename='public-hotels')
 router.register(r'public/monthly-summary', PublicMonthlySummaryViewSet, basename='public-monthly-summary')
 router.register(r'public/documents', PublicDocumentViewSet, basename='public-documents')
