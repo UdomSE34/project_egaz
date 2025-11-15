@@ -1247,8 +1247,9 @@ class PublicHotelViewSet(viewsets.ReadOnlyModelViewSet):
 
 class PublicMonthlySummaryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = MonthlySummary.objects.all()
-    serializer_class = MonthlySummarySerializer
+    serializer_class = PublicMonthlySummarySerializer  # 🔑 use safe public serializer
     permission_classes = [AllowAny]
+
 
 # 🔥 SIMPLE PUBLIC DOCUMENT SERIALIZER
 class PublicDocumentSerializer(serializers.ModelSerializer):
@@ -1267,28 +1268,16 @@ class PublicDocumentSerializer(serializers.ModelSerializer):
         return obj.month.strftime('%B %Y') if obj.month else ""
 
 class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Public endpoint for accessing monthly reports/documents
-    No authentication required
-    """
-    queryset = MonthlySummary.objects.exclude(
-        processed_waste_report__isnull=True,
-        processed_payment_report__isnull=True
-    ).order_by('-month')
     serializer_class = PublicDocumentSerializer
     permission_classes = [AllowAny]
 
-    # 🔥 FIXED: Use proper Q object import
     def get_queryset(self):
-        from django.db.models import Q  # 🔥 ADD THIS IMPORT
-        queryset = super().get_queryset()
-        # Only return summaries that have at least one report
-        return queryset.filter(
+        from django.db.models import Q
+        return MonthlySummary.objects.filter(
             Q(processed_waste_report__isnull=False) |
             Q(processed_payment_report__isnull=False)
-        ).distinct()
-        
-        
+        ).order_by('-month')
+
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
