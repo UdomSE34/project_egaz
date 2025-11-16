@@ -1299,7 +1299,7 @@ class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
         ).order_by('-month')
         
         
-
+        
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -1309,11 +1309,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.platypus import Table, TableStyle
-from datetime import date
+from datetime import date, datetime, timedelta
 import calendar
 
-from egaz_app.models import Invoice
+from egaz_app.models import Invoice, Hotel, Client
 from egaz_app.serializers import InvoiceSerializer
+from egaz_app.services.email_service import send_invoice_to_both_parties
 
 
 class InvoiceViewSet(viewsets.ModelViewSet):
@@ -1386,7 +1387,14 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         invoice.status = 'sent'
         invoice.save()
 
-        return Response({'message': 'Ankara imetumwa kikamilifu.', 'status': invoice.status}, status=status.HTTP_200_OK)
+        # 🔥 SEND EMAILS TO BOTH CLIENT AND HOTEL
+        email_results = send_invoice_to_both_parties(invoice)
+
+        return Response({
+            'message': 'Invoice sent successfully and notifications delivered.', 
+            'status': invoice.status,
+            'emails_sent': email_results
+        }, status=status.HTTP_200_OK)
 
     # 🔹 Kubadilisha status ya invoice manually
     @action(detail=True, methods=['post'])
@@ -1399,8 +1407,58 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
         invoice.status = new_status
         invoice.save()
-        return Response({'message': f'Status imebadilishwa kuwa {new_status}'}, status=status.HTTP_200_OK)
+        
+        # 🔥 SEND NOTIFICATION IF STATUS CHANGED TO SENT
+        if new_status == 'sent':
+            email_results = send_invoice_to_both_parties(invoice)
+            return Response({
+                'message': f'Status changed to {new_status} and notifications sent.',
+                'emails_sent': email_results
+            }, status=status.HTTP_200_OK)
+        
+        return Response({'message': f'Status changed to {new_status}'}, status=status.HTTP_200_OK)
 
+    # 🔹 Bulk send invoices
+    @action(detail=False, methods=['post'])
+    def bulk_send(self, request):
+        """
+        Send multiple invoices at once
+        Expects: {"invoice_ids": ["uuid1", "uuid2", ...]}
+        """
+        invoice_ids = request.data.get('invoice_ids', [])
+        results = []
+        
+        for invoice_id in invoice_ids:
+            try:
+                invoice = Invoice.objects.get(invoice_id=invoice_id)
+                invoice.status = 'sent'
+                invoice.save()
+                
+                # Send emails
+                email_results = send_invoice_to_both_parties(invoice)
+                
+                results.append({
+                    'invoice_number': invoice.invoice_number,
+                    'hotel': invoice.hotel.name,
+                    'emails_sent': email_results,
+                    'status': 'sent'
+                })
+                
+            except Invoice.DoesNotExist:
+                results.append({
+                    'invoice_id': invoice_id,
+                    'error': 'Invoice not found'
+                })
+            except Exception as e:
+                results.append({
+                    'invoice_id': invoice_id,
+                    'error': str(e)
+                })
+        
+        return Response({
+            'message': f'Processed {len(results)} invoices',
+            'results': results
+        }, status=status.HTTP_200_OK)
 
     # 🔹 Kubadilisha status kuwa received na kudownload PDF
     @action(detail=True, methods=["post"])
@@ -1414,90 +1472,130 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         invoice.save()
 
         hotel_name = invoice.hotel.name if invoice.hotel else "—"
+        hotel_address = invoice.hotel.address if invoice.hotel and invoice.hotel.address else "—"
+        hotel_phone = invoice.hotel.contact_phone if invoice.hotel and invoice.hotel.contact_phone else "—"
+        hotel_email = invoice.hotel.email if invoice.hotel and invoice.hotel.email else "—"
 
-        # Tafsiri mwezi unaofuata
+        # Invoice dates
+        invoice_date = date.today()
+        due_date = invoice_date + timedelta(days=7)  # Due in 7 days
+
+        # 🔥 SERVICE PERIOD FOR NEXT MONTH
         next_month = invoice.month + 1 if invoice.month < 12 else 1
         next_year = invoice.year if invoice.month < 12 else invoice.year + 1
         next_month_name = calendar.month_name[next_month]
-        next_month_str = f"{next_month_name} {next_year}"
+        service_period = f"{next_month_name} {next_year}"
 
-        # ========== KUANDAA PDF ========== #
+        # ========== KUANDAA PROFESSIONAL PDF INVOICE ========== #
         buffer = BytesIO()
         p = canvas.Canvas(buffer, pagesize=A4)
         width, height = A4
 
-        # HEADER
+        # COMPANY HEADER
         p.setFont("Helvetica-Bold", 16)
         p.setFillColor(colors.HexColor("#003366"))
-        p.drawCentredString(width / 2, height - 50, "FORSTER INVESTMENT LTD")
-
-        p.setFont("Helvetica", 10)
+        p.drawCentredString(width / 2, height - 50, "OFFICIAL TAX INVOICE")
+        
+        # Company Info - LEFT SIDE
+        p.setFont("Helvetica-Bold", 12)
         p.setFillColor(colors.black)
-        p.drawCentredString(width / 2, height - 65, "P.O.BOX 1345, HOUSE KS KM 162 AIRPORT ROAD, ZANZIBAR – TANZANIA")
-        p.drawCentredString(width / 2, height - 80, "Barua Pepe: info@fosterinvestment.co.uk | Simu: +255 716 920 506 / +255 657 832 327")
+        p.drawString(50, height - 80, "Company: FOSTER INVESTMENT LTD")
+        
+        p.setFont("Helvetica", 10)
+        p.drawString(50, height - 95, "Address: P.O.BOX 1345, HOUSE KS KM 162, AIRPORT ROAD, ZANZIBAR – TANZANIA")
+        p.drawString(50, height - 110, "Contact: +255 716920506 / +255 657 832 327")
+        p.drawString(50, height - 125, "Email: info@fosterinvestment.co.uk")
+        p.drawString(50, height - 140, "ZRA No: Z0000126780")
+        p.drawString(50, height - 155, "VRN No: 07004105Y")
+        p.drawString(50, height - 170, "TIN No: 153-730-806")
 
-        p.line(40, height - 90, width - 40, height - 90)
+        # Invoice Details - RIGHT SIDE
+        p.drawString(350, height - 80, f"Invoice No: {invoice.invoice_number}")
+        p.drawString(350, height - 95, f"Invoice Date: {invoice_date.strftime('%d %b %Y')}")
+        p.drawString(350, height - 110, f"Due Date: {due_date.strftime('%d %b %Y')}")
+        
+        # 🔥 SERVICE PERIOD FOR NEXT MONTH
+        p.drawString(350, height - 125, f"Service Period: {service_period}")
 
-        # TITLE
-        p.setFont("Helvetica-Bold", 16)
-        p.setFillColor(colors.HexColor("#003366"))
-        p.drawCentredString(width / 2, height - 120, "TAARIFA YA MALIPO YA MWEZI")
+        # Separator line
+        p.line(40, height - 180, width - 40, height - 180)
 
-        p.setFont("Helvetica", 12)
-        p.drawCentredString(width / 2, height - 140, f"Kwa mwezi wa {next_month_str}")
+        # BILL TO SECTION
+        p.setFont("Helvetica-Bold", 12)
+        p.drawString(50, height - 200, "BILL TO:")
+        
+        p.setFont("Helvetica", 10)
+        p.drawString(50, height - 215, f"{hotel_name}")
+        if hotel_address and hotel_address != "—":
+            p.drawString(50, height - 230, f"{hotel_address}")
+        if hotel_phone and hotel_phone != "—":
+            p.drawString(50, height - 245, f"Phone: {hotel_phone}")
+        if hotel_email and hotel_email != "—":
+            p.drawString(50, height - 260, f"Email: {hotel_email}")
 
-        # MESSAGE
-        p.setFont("Helvetica", 11)
-        p.drawString(
-            50,
-            height - 170,
-            f"Tunapenda kuwajulisha kuwa malipo kwa hoteli ya {hotel_name} kwa kipindi cha mwezi {next_month_str} "
-        )
-        p.drawString(
-            50,
-            height - 180,
-            f"yanapaswa kufanyika kama inavyoelezwa katika taarifa ifuatayo:"
-        )
+        # Separator line
+        p.line(40, height - 275, width - 40, height - 275)
 
-        # TABLE
+        # INVOICE ITEMS TABLE
+        p.setFont("Helvetica-Bold", 12)
+        p.drawString(50, height - 295, "SERVICE DESCRIPTION")
+
+        # Table data
         table_data = [
-            ["Hoteli", "Mteja", "Mwezi/Mwaka", "Kiasi (TZS)", "Hali"],
+            ["Description", "Quantity", "Unit Price (TZS)", "Amount (TZS)"],
             [
-                hotel_name,
-                invoice.client.name if invoice.client else "—",
-                next_month_str,
+                f"Waste Management Services - {service_period}",
+                "1 Month",
                 f"{invoice.amount:,.2f}",
-                invoice.status.capitalize(),
+                f"{invoice.amount:,.2f}"
             ],
         ]
 
-        table = Table(table_data, colWidths=[120, 120, 100, 100, 80])
+        table = Table(table_data, colWidths=[250, 80, 100, 100])
         style = TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 10),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
             ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ALIGN", (0, 1), (0, -1), "LEFT"),  # Left align description
         ])
         table.setStyle(style)
         table.wrapOn(p, width, height)
-        table.drawOn(p, 60, height - 250)
+        table.drawOn(p, 50, height - 350)
 
-        # FOOTER TEXT (Ujumbe wa shukrani)
-        p.setFont("Helvetica", 11)
-        p.drawString(50, height - 300, "Tunashukuru kwa kuendelea kutumia huduma zetu.")
-        p.drawString(50, height - 320, "Forster Investment Ltd inatamani mafanikio mema kwa biashara yako na inathamini ushirikiano wako.")
+        # TOTAL AMOUNT SECTION (WITHOUT VAT)
+        p.setFont("Helvetica-Bold", 14)
+        p.drawString(350, height - 380, "TOTAL AMOUNT:")
+        p.drawString(480, height - 380, f"TZS {invoice.amount:,.2f}")
 
-        # FOOTER LINE
-        p.setStrokeColor(colors.grey)
-        p.line(40, 80, width - 40, 80)
+        # PAYMENT INSTRUCTIONS
+        p.setFont("Helvetica-Bold", 11)
+        p.drawString(50, height - 420, "PAYMENT INSTRUCTIONS:")
+        
+        p.setFont("Helvetica", 10)
+        p.drawString(50, height - 435, "1. Bank Transfer: CRDB Bank, Account: 0151032789300")
+        p.drawString(50, height - 450, "2. Mobile Money: M-Pesa / Tigo Pesa / Airtel Money")
+
+        # TERMS AND CONDITIONS
+        p.setFont("Helvetica-Bold", 11)
+        p.drawString(50, height - 490, "TERMS & CONDITIONS:")
+        
         p.setFont("Helvetica", 9)
+        p.drawString(50, height - 505, "• Payment due within 7 days of invoice date")
+        p.drawString(50, height - 535, "• Services may be suspended for overdue accounts")
+
+        # FOOTER
+        p.setStrokeColor(colors.grey)
+        p.line(40, 60, width - 40, 80)
+        p.setFont("Helvetica", 8)
         p.setFillColor(colors.grey)
-        p.drawCentredString(width / 2, 65, "Imetolewa na Mfumo wa Forster Investment Ltd")
-        p.drawCentredString(width / 2, 50, f"© {date.today().year} Forster Investment Ltd - Haki Zote Zimehifadhiwa")
+        p.drawCentredString(width / 2, 65, "Thank you for your business!")
+        p.drawCentredString(width / 2, 50, "For any inquiries, contact: +255 716920506 / +255 657 832 327 | Email: info@fosterinvestment.co.uk")
+        p.drawCentredString(width / 2, 35, f"© {date.today().year} Foster Investment Ltd - All Rights Reserved")
 
         # SAVE PDF
         p.showPage()
@@ -1505,5 +1603,5 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         buffer.seek(0)
 
         response = HttpResponse(buffer, content_type="application/pdf")
-        response['Content-Disposition'] = f'attachment; filename=\"invoice_{invoice.invoice_id}.pdf\"'
-        return response
+        response['Content-Disposition'] = f'attachment; filename=\"invoice_{invoice.invoice_number}.pdf\"'
+        return response        

@@ -420,19 +420,23 @@ class PublicMonthlySummarySerializer(serializers.ModelSerializer):
             return ""            
 
 class InvoiceSerializer(serializers.ModelSerializer):
+    invoice_number = serializers.CharField(read_only=True)  # 🔥 ADD THIS
     hotel_name = serializers.CharField(source='hotel.name', read_only=True)
     client_name = serializers.CharField(source='client.name', read_only=True)
+    month_name = serializers.SerializerMethodField()  # 🔥 ADD FOR BETTER DISPLAY
 
     class Meta:
         model = Invoice
         fields = [
             'invoice_id',
+            'invoice_number',  # 🔥 ADD THIS - AUTO-GENERATED
             'hotel',
             'hotel_name',
             'client',
             'client_name',
             'month',
-            'year',  # hakujumuishwa hapo awali, kuongeza itasaidia frontend
+            'year',
+            'month_name',  # 🔥 ADD FOR FRONTEND DISPLAY
             'amount',
             'status',
             'is_received',
@@ -440,4 +444,14 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['hotel_name', 'client_name']
+        read_only_fields = ['invoice_id', 'invoice_number', 'hotel_name', 'client_name', 'month_name', 'created_at', 'updated_at']
+
+    def get_month_name(self, obj):
+        """
+        Return month name for better display in frontend
+        Example: 11 -> "November"
+        """
+        try:
+            return datetime(obj.year, obj.month, 1).strftime('%B')
+        except:
+            return "Unknown"

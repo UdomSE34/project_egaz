@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #003366; color: white; padding: 20px; text-align: center; }
+        .content { padding: 20px; background: #f9f9f9; }
+        .footer { padding: 20px; text-align: center; font-size: 12px; color: #666; }
+        .button { background: #003366; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; }
+        .invoice-details { background: white; padding: 15px; border-radius: 5px; margin: 15px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>FOSTER INVESTMENT LTD</h1>
+            <h2>Invoice Notification</h2>
+        </div>
+        
+        <div class="content">
+            <p>Dear {{ recipient_name }},</p>
+            
+            <p>A new invoice has been generated and requires your attention.</p>
+            
+            <div class="invoice-details">
+                <h3>Invoice Details:</h3>
+                <p><strong>Invoice Number:</strong> {{ invoice_number }}</p>
+                <p><strong>Service Period:</strong> {{ service_period }}</p>
+                <p><strong>Amount:</strong> TZS {{ amount|floatformat:2 }}</p>
+                <p><strong>Due Date:</strong> {{ due_date }}</p>
+                <p><strong>Status:</strong> Sent</p>
+            </div>
+
+            <p>Please log in to your account to view the complete invoice details and make payment.</p>
+            
+            <p style="text-align: center;">
+                <a href="https://front.deploy.tz/login" class="button">Login to Your Account</a>
+            </p>
+
+            <p><strong>Payment Instructions:</strong></p>
+            <ul>
+                <li>Bank Transfer: CRDB Bank, Account: 0151032789300</li>
+                <li>Mobile Money: M-Pesa / Tigo Pesa / Airtel Money</li>
+                <li>Please use Invoice Number as payment reference</li>
+            </ul>
+
+            <p>If you have any questions, please contact our support team.</p>
+        </div>
+        
+        <div class="footer">
+            <p>FOSTER INVESTMENT LTD<br>
+            P.O.BOX 1345, HOUSE KS KM 162, AIRPORT ROAD, ZANZIBAR – TANZANIA<br>
+            Contact: +255 716920506 / +255 657 832 327 | Email: info@fosterinvestment.co.uk</p>
+            <p>© {% now "Y" %} Foster Investment Ltd - All Rights Reserved</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -717,6 +717,16 @@ class Invoice(models.Model):
     ]
 
     invoice_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # 🔥 TEMPORARY: Remove unique constraint for migration
+    invoice_number = models.CharField(
+        max_length=20, 
+        unique=True,  # 🔥 CHANGE TO FALSE FIRST
+        blank=True,
+        null=True,     # 🔥 ADD NULL TRUE
+        help_text="Auto-generated invoice number (FI-INV-YYYY-MM-NNNN)"
+    )
+    
     hotel = models.ForeignKey('Hotel', on_delete=models.CASCADE, related_name='invoices')
     client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='invoices')
     amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
@@ -733,54 +743,70 @@ class Invoice(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = ('hotel', 'month', 'year')  # avoid duplicate invoices for same month
+        unique_together = ('hotel', 'month', 'year')
+        ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.hotel.name} - {self.month}/{self.year}"
+        return f"{self.invoice_number or 'No Number'} - {self.hotel.name}"
 
-    def month_name(self):
-        return datetime(self.year, self.month, 1).strftime('%B')
-
-    @classmethod
-    def generate_for_month(cls, month_date=None):
+    # ... rest of your methods remain the same
+    def save(self, *args, **kwargs):
         """
-        Generate invoices for all hotels for a given month.
-        - If month_date is None, defaults to current month.
-        - Ensures each invoice has a valid client.
-        - Skips invoices that already exist (unique_together).
+        Auto-generate invoice number before saving if it doesn't exist
         """
-        from .models import Hotel, Client  # import here to avoid circular import
+        if not self.invoice_number:
+            self.invoice_number = self.generate_invoice_number()
+        super().save(*args, **kwargs)
 
-        if month_date is None:
-            month_date = date.today()
-
-        hotels = Hotel.objects.all()
-        created_invoices = []
-
-        # Get a fallback client in case hotel has no client
-        fallback_client = Client.objects.first()
-        if not fallback_client:
-            raise ValueError("No clients found in the database. Please create at least one client.")
-
-        for hotel in hotels:
-            # Assign client: hotel.client if exists, otherwise fallback
-            client = getattr(hotel, 'client', None) or fallback_client
-
-            invoice, created = cls.objects.get_or_create(
-                hotel=hotel,
-                month=month_date.month,
-                year=month_date.year,
-                defaults={
-                    'client': client,
-                    'amount': 0.0,
-                    'status': 'not_sent',
-                    'is_recurring': True,
-                    'is_received': False,
-                }
-            )
-            if created:
-                created_invoices.append(invoice)
-
-        return created_invoices
+    def generate_invoice_number(self):
+        """
+        Generate unique invoice number in format: FI-INV-YYYY-MM-NNNN
+        """
+        from django.db.models import Max
+        import datetime
+        
+        current_year = self.year or datetime.datetime.now().year
+        current_month = self.month or datetime.datetime.now().month
+        
+        # Format: FI-INV-YYYY-MM
+        base_prefix = f"FI-INV-{current_year}-{current_month:02d}"
+        
+        # Find the highest sequence number for this month
+        last_invoice = Invoice.objects.filter(
+            invoice_number__startswith=base_prefix
+        ).order_by('-invoice_number').first()
+        
+        if last_invoice and last_invoice.invoice_number:
+            try:
+                # Extract the sequence number from existing invoice
+                last_seq = int(last_invoice.invoice_number.split('-')[-1])
+                next_seq = last_seq + 1
+            except (ValueError, IndexError):
+                next_seq = 1
+        else:
+            next_seq = 1
+        
+        # Format with leading zeros: 0001, 0002, etc.
+        sequence_str = f"{next_seq:04d}"
+        
+        return f"{base_prefix}-{sequence_str}"
+    
+    
+    def get_service_period_display(self):
+        """Get service period for next month"""
+        next_month = self.month + 1 if self.month < 12 else 1
+        next_year = self.year if self.month < 12 else self.year + 1
+        next_month_name = datetime(next_year, next_month, 1).strftime('%B')
+        return f"{next_month_name} {next_year}"
+    
+    def get_due_date(self):
+        """Calculate due date (7 days from now)"""
+        due_date = datetime.now() + timedelta(days=7)
+        return due_date.strftime('%d %b %Y')
+    
+    def send_notification_emails(self):
+        """Send emails to both client and hotel"""
+        from .services.email_service import send_invoice_to_both_parties
+        return send_invoice_to_both_parties(self)
 
 
