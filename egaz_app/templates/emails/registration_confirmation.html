@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+         body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #003366; color: white; padding: 20px; text-align: center; }
+        .content { padding: 20px; background: #f9f9f9; }
+        .footer { padding: 20px; text-align: center; font-size: 12px; color: #666; }
+        .button { background: #003366; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; }
+        .invoice-details { background: white; padding: 15px; border-radius: 5px; margin: 15px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Welcome to Foster Investment</h1>
+        </div>
+        
+        <div class="content">
+            <h2>Dear {{ client_name }},</h2>
+            
+            <p>Thank you for registering with Foster Investment! We're excited to have you on board.</p>
+            
+            <p>Your registration has been successfully completed. You can now access your account and start exploring our investment opportunities.</p>
+            
+            <p><strong>Next Steps:</strong></p>
+            <ul>
+                <li>Complete your profile verification</li>
+                <li>Explore available investment options</li>
+                <li>Set up your investment preferences</li>
+            </ul>
+            
+            <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+            
+            <p>Best regards,<br>
+            The Foster Investment Team</p>
+        </div>
+        
+        <div class="footer">
+            <p>&copy; {% now "Y" %} Foster Investment. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

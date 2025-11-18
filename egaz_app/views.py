@@ -208,55 +208,70 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 import secrets
-from datetime import datetime, timedelta
+import logging
 
 from .models import Client, AuthToken
 from .serializers import ClientSerializer
+from .services.email_registration import send_registration_email
 from .authentication import CustomTokenAuthentication
 
+# Configure a logger
+logger = logging.getLogger(__name__)
 
 class ClientViewSet(viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
-    authentication_classes = [CustomTokenAuthentication]
-    permission_classes = [IsAuthenticated]  # default for all actions
+    authentication_classes = [CustomTokenAuthentication]  # Token auth
+    permission_classes = [IsAuthenticated]  # Default
 
-    # Disable default POST /api/clients/ to avoid unauthenticated creation
-    def create(self, request, *args, **kwargs):
-        return Response(
-            {"detail": "Use /register/ endpoint to create clients."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED
-        )
+    def get_permissions(self):
+        """
+        Allow unauthenticated access for registration only.
+        """
+        if getattr(self, 'action', None) == "register_client":
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
-    # Registration endpoint
-    @action(detail=False, methods=['post'], url_path='register', permission_classes=[AllowAny])
+    @action(detail=False, methods=['post'], url_path='register')
     def register_client(self, request):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
-            client = serializer.save(role='client')  # Ensure role is 'client'
+            client = serializer.save(role='client')
 
             # Create auth token automatically
             token = AuthToken.objects.create(
                 client=client,
-                token=secrets.token_hex(32),
-                # expires_at=datetime.now() + timedelta(days=7)  # 7-day expiry
+                token=secrets.token_hex(32)
             )
 
-            return Response({
-                'message': 'Client registered successfully',
-                'client_id': client.client_id,
-                'token': token.token
-            }, status=status.HTTP_201_CREATED)
+            # Send registration email safely
+            try:
+                email_sent = send_registration_email(client)
+            except Exception as e:
+                email_sent = False
+                logger.error(f"Failed to send registration email to {client.email}: {e}")
+
+            # Build response
+            response_data = {
+                "message": "Client registered successfully",
+                "client_id": client.client_id,
+                "token": token.token,
+                "email_sent": email_sent
+            }
+
+            if not email_sent:
+                response_data["warning"] = "Registration successful but email notification failed."
+
+            return Response(response_data, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
- 
+
 
 class WasteTypeViewSet(viewsets.ModelViewSet):
     queryset = WasteType.objects.all()
