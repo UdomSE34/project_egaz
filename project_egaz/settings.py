@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-(3a3^x(l^epb+eh3qk2+)r(9_wzuamb!e%ddi@j&cw$p4i-ox8'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False # 🔥 KEEP THIS AS FALSE FOR PRODUCTION
+DEBUG = False  # 🔥 KEEP THIS AS FALSE FOR PRODUCTION
 
 ALLOWED_HOSTS = ['back.deploy.tz', 'front.deploy.tz', 'localhost', '127.0.0.1']  # 🔥 SPECIFIC HOSTS
 
@@ -85,12 +85,12 @@ DATABASES = {
 # 🔥 CORS CONFIGURATION - FIX THESE
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "https://front.deploy.tz",
+    "https://front.deploy.tz"
 ]
 
 # 🔥 REMOVE OR COMMENT OUT THESE LINES:
-CORS_ALLOW_ALL_ORIGINS = True  # ❌ COMMENT OR REMOVE THIS LINE
-CORS_ALLOW_CREDENTIALS = True   # ❌ COMMENT OR REMOVE THIS LINE
+# CORS_ALLOW_ALL_ORIGINS = True  # ❌ COMMENT OR REMOVE THIS LINE
+# CORS_ALLOW_CREDENTIALS = True   # ❌ COMMENT OR REMOVE THIS LINE
 
 CSRF_TRUSTED_ORIGINS = ['https://front.deploy.tz', 'https://back.deploy.tz']
 

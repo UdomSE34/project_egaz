@@ -85,6 +85,7 @@ class WorkShiftSerializer(serializers.ModelSerializer):
 
 class ScheduleSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
+    address = serializers.CharField(source="hotel.address", read_only=True)
     hotel = serializers.PrimaryKeyRelatedField(queryset=Hotel.objects.all(), write_only=True)
 
     class Meta:
@@ -96,6 +97,7 @@ class ScheduleSerializer(serializers.ModelSerializer):
             'status',
             'hotel',
             'hotel_name',
+            'address',
             'is_visible',
         ]
 
