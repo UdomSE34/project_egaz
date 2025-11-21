@@ -46,10 +46,10 @@ class PdfService:
         if not filtered_schedules:
             elements.append(Paragraph("No pending schedules found for the selected period.", styles['Normal']))
         else:
-            data = [["Hotel", "Date", "Day", "Slot", "Status"]]
+            data = [["Hotel", "Address", "Date", "Day", "Slot", "Status"]]
             for s, schedule_date in filtered_schedules:
                 date_str = schedule_date.strftime("%Y-%m-%d") if isinstance(schedule_date, date) else str(schedule_date)
-                data.append([s.hotel.name, date_str, s.day, s.slot, s.status])
+                data.append([s.hotel.name, s.hotel.address, date_str, s.day, s.slot, s.status])
 
             table = Table(data, colWidths=[120, 100, 80, 100, 80])
             table.setStyle(TableStyle([
