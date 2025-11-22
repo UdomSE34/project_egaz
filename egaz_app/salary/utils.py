@@ -2,7 +2,10 @@ from django.utils import timezone
 from egaz_app.models import Salary, Attendance, RoleSalaryPolicy, User
 
 def calculate_user_salary(user, month=None, year=None, auto_create=True):
+    print(f"🔍 CALCULATING SALARY for: {user.name}, Role: {user.role}")  # ADD THIS LINE
+    
     if user.role.lower() == "admin":
+        print("❌ Skipping admin user")  # ADD THIS LINE
         return None
 
     now = timezone.now()
@@ -11,13 +14,17 @@ def calculate_user_salary(user, month=None, year=None, auto_create=True):
 
     try:
         policy = RoleSalaryPolicy.objects.get(role=user.role)
+        print(f"✅ Policy found: {policy.role}, Base: {policy.base_salary}")  # ADD THIS LINE
     except RoleSalaryPolicy.DoesNotExist:
+        print(f"❌ No policy for role: {user.role}")  # ADD THIS LINE
         return None
 
     base_salary = policy.base_salary
     bonuses = policy.bonuses
 
+    # Calculate deductions based on attendance
     attendance_records = Attendance.objects.filter(user=user, date__month=month, date__year=year)
+    print(f"📅 Attendance records found: {attendance_records.count()}")  # ADD THIS LINE
 
     deduction = 0
     sick_days = 0
@@ -36,6 +43,21 @@ def calculate_user_salary(user, month=None, year=None, auto_create=True):
     total_salary = base_salary + bonuses - deduction
 
     if auto_create:
+        # Get existing salary to preserve status if it exists
+        existing_salary = Salary.objects.filter(
+            user=user, 
+            month=month, 
+            year=year
+        ).first()
+        
+        current_status = "Unpaid"  # Default status for new records
+        
+        if existing_salary:
+            # Preserve the existing status
+            current_status = existing_salary.status
+            print(f"💰 Existing salary found, preserving status: {current_status}")  # ADD THIS LINE
+        
+        # ✅ ALWAYS CREATE/UPDATE SALARY RECORD regardless of attendance
         salary, created = Salary.objects.update_or_create(
             user=user,
             month=month,
@@ -46,14 +68,11 @@ def calculate_user_salary(user, month=None, year=None, auto_create=True):
                 "bonuses": bonuses,
                 "deductions": deduction,
                 "total_salary": total_salary,
+                "status": current_status,
             }
         )
-
-        # Only set status if new record
-        if created:
-            salary.status = "Unpaid"
-            salary.save()
-
+        
+        print(f"✅ {'CREATED' if created else 'UPDATED'} salary for {user.name}: ID={salary.salary_id}")  # ADD THIS
         return salary
     else:
         return {
@@ -62,8 +81,9 @@ def calculate_user_salary(user, month=None, year=None, auto_create=True):
             "deductions": deduction,
             "total_salary": total_salary,
         }
-
-
+        
+        
+        
 def update_salary_for_all_users(month=None, year=None):
     """
     Update or generate salary records for all active non-admin users.
@@ -75,10 +95,17 @@ def update_salary_for_all_users(month=None, year=None):
 
     users = User.objects.filter(is_active=True).exclude(role__iexact="admin")
     updated_count = 0
+    created_count = 0
 
     for user in users:
         salary = calculate_user_salary(user, month, year, auto_create=True)
         if salary:
-            updated_count += 1
+            # Check if this was a new creation by looking for the default "Unpaid" status
+            if salary.status == "Unpaid" and not Salary.objects.filter(
+                user=user, month=month, year=year
+            ).exclude(pk=salary.pk).exists():
+                created_count += 1
+            else:
+                updated_count += 1
 
-    return updated_count
+    return {"created": created_count, "updated": updated_count}

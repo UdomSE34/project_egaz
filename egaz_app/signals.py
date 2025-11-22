@@ -120,3 +120,76 @@ def create_invoice_for_new_hotel(sender, instance, created, **kwargs):
             comment='Auto-generated invoice for new hotel'
         )
 
+
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from django.utils import timezone
+from .models import User, Attendance, Salary, RoleSalaryPolicy
+from datetime import timedelta
+
+@receiver(post_save, sender=User)
+def create_salary_for_new_user(sender, instance, created, **kwargs):
+    """
+    Automatically create salary record for new active users
+    """
+    if created and instance.is_active and instance.role != "Admin":
+        print(f"💰 Creating salary for new user: {instance.name} ({instance.role})")
+        
+        # Get the role policy
+        policy = RoleSalaryPolicy.objects.filter(role=instance.role).first()
+        
+        if policy:
+            # Create salary for current month
+            current_month = timezone.now().month
+            current_year = timezone.now().year
+            
+            salary, salary_created = Salary.objects.get_or_create(
+                user=instance,
+                month=current_month,
+                year=current_year,
+                defaults={
+                    "policy": policy,
+                    "base_salary": policy.base_salary,
+                    "bonuses": policy.bonuses,
+                    "deductions": 0,
+                    "total_salary": policy.base_salary + policy.bonuses,
+                    "status": "Unpaid"
+                }
+            )
+            
+            if salary_created:
+                print(f"✅ Salary created for {instance.name}: {salary.salary_id}")
+            else:
+                print(f"📝 Salary already exists for {instance.name}")
+        else:
+            print(f"⚠️ No policy found for role: {instance.role} - Cannot create salary")
+
+@receiver(post_save, sender=User)
+def create_attendance_for_new_user(sender, instance, created, **kwargs):
+    """
+    Automatically create attendance records for new active users
+    """
+    if created and instance.is_active:
+        print(f"🎯 Creating attendance for new user: {instance.name}")
+        
+        # Create attendance for today and a few days back
+        today = timezone.now().date()
+        
+        # Create attendance for current week (7 days back and 3 days forward)
+        for days_back in range(7, -4, -1):  # From 7 days ago to 3 days in future
+            attendance_date = today - timedelta(days=days_back)
+            
+            # Don't create records too far in the future
+            if attendance_date > today + timedelta(days=3):
+                continue
+                
+            # Create attendance record if it doesn't exist
+            Attendance.objects.get_or_create(
+                user=instance,
+                date=attendance_date,
+                defaults={
+                    "status": "present",  # Default to present
+                    "comment": "Auto-created for new user",
+                    "absent_count": 0
+                }
+            )

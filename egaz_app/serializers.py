@@ -240,10 +240,7 @@ class CompletedWasteRecordSerializer(serializers.ModelSerializer):
         return CompletedWasteRecord.objects.create(schedule=schedule, **validated_data)
     
 
-# Attendance 
-  
-from rest_framework import serializers
-from .models import User, Salary, RoleSalaryPolicy
+
 
 
 class RoleSalaryPolicySerializer(serializers.ModelSerializer):
@@ -253,11 +250,15 @@ class RoleSalaryPolicySerializer(serializers.ModelSerializer):
 
 
 class SalarySerializer(serializers.ModelSerializer):
+    salary_id = serializers.UUIDField(read_only=True)  # Add this line explicitly
+    
     class Meta:
         model = Salary
-        fields = "__all__"
-        
-        
+        fields = [
+            'salary_id', 'user', 'policy', 'base_salary', 'bonuses', 
+            'deductions', 'total_salary', 'status', 'month', 'year'
+        ]
+        read_only_fields = ['salary_id']  # Make sure salary_id is read-only
         
 class UserWithSalarySerializer(serializers.ModelSerializer):
     salary = serializers.SerializerMethodField()
@@ -302,7 +303,7 @@ class UserWithSalarySerializer(serializers.ModelSerializer):
             base_salary = float(policy.base_salary)
             bonuses = float(policy.bonuses)
             return {
-                "salary_id": None,
+                
                 "base_salary": base_salary,
                 "bonuses": bonuses,
                 "deductions": 0.0,

@@ -419,7 +419,7 @@ class Attendance(models.Model):
     attendance_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey("User", on_delete=models.CASCADE, related_name="attendances")
     date = models.DateField()
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='present')
     comment = models.TextField(blank=True, null=True)
     absent_count = models.PositiveIntegerField(default=0)
 

@@ -759,13 +759,13 @@ def login_view(request):
 
 
 
-class AttendanceViewSet(viewsets.ModelViewSet):
-    serializer_class = AttendanceSerializer
-    authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
-    permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
+# class AttendanceViewSet(viewsets.ModelViewSet):
+#     serializer_class = AttendanceSerializer
+#     authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
+#     permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
 
-    def get_queryset(self):
-        return Attendance.objects.all()
+#     def get_queryset(self):
+#         return Attendance.objects.all()
 
 
 # Admin Salary Management
@@ -812,14 +812,16 @@ class UserWithSalaryViewSet(viewsets.ReadOnlyModelViewSet):
         month = int(request.data.get("month", timezone.now().month))
         year = int(request.data.get("year", timezone.now().year))
 
-        created_count = update_salary_for_all_users(month, year)
+        result = update_salary_for_all_users(month, year)
 
         return Response({
-            "message": f"Salaries calculated for {created_count} users",
+            "message": f"Salaries processed successfully",
+            "created": result["created"],
+            "updated": result["updated"],
             "month": month,
             "year": year,
         })
-
+    
 class RoleSalaryPolicyViewSet(viewsets.ModelViewSet):
     """Manage base salaries and deduction rules for each role."""
     queryset = RoleSalaryPolicy.objects.all()
@@ -859,14 +861,14 @@ class SalaryViewSet(viewsets.ModelViewSet):
         salaries = Salary.objects.select_related("user").all()
         return generate_salary_pdf(salaries, response)
     
+    
+    
 from rest_framework import viewsets
 from django.utils import timezone
 from egaz_app.models import Attendance, User
 from egaz_app.serializers import AttendanceSerializer
 from egaz_app.salary.utils import calculate_user_salary
 from egaz_app.attendance.utils import ensure_attendance_for_month
-
-
 class AttendanceViewSet(viewsets.ModelViewSet):
     queryset = Attendance.objects.all()
     serializer_class = AttendanceSerializer
