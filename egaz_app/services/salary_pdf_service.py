@@ -58,9 +58,9 @@ def generate_salary_pdf(salaries, response):
             Paragraph(s.user.name, wrap_style),
             Paragraph(s.user.role, wrap_style),
             f"{s.base_salary:,.2f} Tsh",
-            f"${s.bonuses:,.2f} Tsh",
-            f"${s.deductions:,.2f} Tsh",
-            f"${s.total_salary:,.2f} Tsh",
+            f"{s.bonuses:,.2f} Tsh",
+            f"{s.deductions:,.2f} Tsh",
+            f"{s.total_salary:,.2f} Tsh",
             absences,
             Paragraph(s.user.status.capitalize(), wrap_style)
         ])
