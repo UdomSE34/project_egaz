@@ -57,10 +57,10 @@ def generate_salary_pdf(salaries, response):
         data.append([
             Paragraph(s.user.name, wrap_style),
             Paragraph(s.user.role, wrap_style),
-            f"${s.base_salary:,.2f}",
-            f"${s.bonuses:,.2f}",
-            f"${s.deductions:,.2f}",
-            f"${s.total_salary:,.2f}",
+            f"{s.base_salary:,.2f} Tsh",
+            f"${s.bonuses:,.2f} Tsh",
+            f"${s.deductions:,.2f} Tsh",
+            f"${s.total_salary:,.2f} Tsh",
             absences,
             Paragraph(s.user.status.capitalize(), wrap_style)
         ])
@@ -75,7 +75,7 @@ def generate_salary_pdf(salaries, response):
         "",
         "",
         "",
-        f"${total_payroll:,.2f}",
+        f"{total_payroll:,.2f} Tsh",
         total_absences,
         ""
     ])
