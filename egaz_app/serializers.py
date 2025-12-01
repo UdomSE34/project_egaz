@@ -50,17 +50,82 @@ class ClientSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
     
     
+    
+from rest_framework import serializers
+from .models import Client
+class ClientManagementSerializer(serializers.ModelSerializer):
+    """
+    Serializer for admin/staff client management
+    """
+    password = serializers.CharField(write_only=True, required=False, min_length=6)
+    created_at = serializers.DateTimeField(read_only=True)
+    
+    class Meta:
+        model = Client
+        fields = ['client_id', 'name', 'phone', 'email', 'address', 'password', 'role', 'created_at']
+        read_only_fields = ['client_id', 'role', 'created_at']
+    
+    def create(self, validated_data):
+        return Client.objects.create(**validated_data)
+    
+
+
+from rest_framework import serializers
+from .models import Client
+
+class ClientProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer for client profile - allows clients to update their own information
+    """
+    class Meta:
+        model = Client
+        fields = ['client_id', 'name', 'email', 'phone', 'address', 'created_at']
+        read_only_fields = ['client_id', 'created_at']
+    
+    def update(self, instance, validated_data):
+        """
+        Handle password update separately if provided
+        """
+        password = validated_data.pop('password', None)
+        
+        # Update other fields
+        instance = super().update(instance, validated_data)
+        
+        # Update password if provided
+        if password:
+            instance.set_password(password)
+            instance.save()
+        
+        return instance
+
+class ClientPasswordChangeSerializer(serializers.Serializer):
+    """
+    Serializer for password change
+    """
+    current_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(required=True, write_only=True, min_length=6)
+    confirm_password = serializers.CharField(required=True, write_only=True)
+
+    def validate(self, data):
+        """
+        Check that passwords match
+        """
+        if data['new_password'] != data['confirm_password']:
+            raise serializers.ValidationError("New passwords do not match")
+        return data
+    
+    
 class PendingHotelSerializer(serializers.ModelSerializer):
     class Meta:
         model = PendingHotel
         fields = "__all__"  # includes 'client'
 
 
-class HotelSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Hotel
-        fields = '__all__'
-        read_only_fields = ['client', 'created_at']
+# class HotelSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Hotel
+#         fields = '__all__'
+#         read_only_fields = ['client', 'created_at']
 
 class WasteTypeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -420,41 +485,203 @@ class PublicMonthlySummarySerializer(serializers.ModelSerializer):
         try:
             return obj.month.strftime("%B %Y")
         except:
-            return ""            
+            return ""         
+    
+    
+    
 
 class InvoiceSerializer(serializers.ModelSerializer):
-    invoice_number = serializers.CharField(read_only=True)  # 🔥 ADD THIS
     hotel_name = serializers.CharField(source='hotel.name', read_only=True)
     client_name = serializers.CharField(source='client.name', read_only=True)
-    month_name = serializers.SerializerMethodField()  # 🔥 ADD FOR BETTER DISPLAY
+    month_name = serializers.SerializerMethodField()
+    
+    # 🔥 REMOVED: invoice_number, amount fields
+    # 🔥 files field is automatically included from the model
 
     class Meta:
         model = Invoice
         fields = [
             'invoice_id',
-            'invoice_number',  # 🔥 ADD THIS - AUTO-GENERATED
             'hotel',
             'hotel_name',
-            'client',
+            'client', 
             'client_name',
             'month',
             'year',
-            'month_name',  # 🔥 ADD FOR FRONTEND DISPLAY
-            'amount',
+            'month_name',
             'status',
-            'is_received',
             'comment',
+            'files',  # 🔥 SINGLE FIELD FOR MULTIPLE FILES
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['invoice_id', 'invoice_number', 'hotel_name', 'client_name', 'month_name', 'created_at', 'updated_at']
+        read_only_fields = ['invoice_id', 'hotel_name', 'client_name', 'month_name', 'created_at', 'updated_at']
 
     def get_month_name(self, obj):
-        """
-        Return month name for better display in frontend
-        Example: 11 -> "November"
-        """
+        """Return month name for better display in frontend"""
         try:
             return datetime(obj.year, obj.month, 1).strftime('%B')
         except:
             return "Unknown"
+        
+        
+
+from rest_framework import serializers
+from .models import Storage
+import os
+
+class StorageSerializer(serializers.ModelSerializer):
+    file_size_display = serializers.ReadOnlyField()
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
+    file_url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
+    can_preview = serializers.ReadOnlyField()
+    file_icon = serializers.ReadOnlyField()
+    file_type_category = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Storage
+        fields = [
+            'document_id',
+            'name',
+            'document_type',
+            'description',
+            'file',
+            'file_url',
+            'preview_url',
+            'can_preview',
+            'file_size',
+            'file_size_display',
+            'file_extension',
+            'file_icon',
+            'file_type_category',
+            'original_filename',
+            'uploaded_by',
+            'uploaded_by_name',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = [
+            'document_id', 'file_size', 'file_extension', 'original_filename',
+            'uploaded_by', 'created_at', 'updated_at', 'file_icon', 'file_type_category'
+        ]
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+    def get_preview_url(self, obj):
+        request = self.context.get('request')
+        if obj.can_preview() and request:
+            return request.build_absolute_uri(f"/api/storage/{obj.document_id}/preview/")
+        return None
+
+    def validate_file(self, value):
+        """Validate uploaded file"""
+        # Check file extension
+        ext = os.path.splitext(value.name)[1].lower().replace('.', '')
+        if ext not in Storage.ALLOWED_EXTENSIONS:
+            raise serializers.ValidationError(
+                f"File type '{ext}' is not allowed. "
+                f"Allowed types: {', '.join(Storage.ALLOWED_EXTENSIONS)}"
+            )
+        
+        # Check file size (50MB max)
+        max_size = 500 * 1024 * 1024
+        if value.size > max_size:
+            raise serializers.ValidationError(f"File size must be less than 50MB.")
+        
+        return value
+
+    def create(self, validated_data):
+        # Automatically set the uploaded_by user
+        validated_data['uploaded_by'] = self.context['request'].user
+        return super().create(validated_data)
+    
+    
+    
+    
+from rest_framework import serializers
+from .models import Storage, User
+import os
+
+class StorageSerializer(serializers.ModelSerializer):
+    file_size_display = serializers.ReadOnlyField()
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
+    file_url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
+    can_preview = serializers.ReadOnlyField()
+    file_icon = serializers.ReadOnlyField()
+    file_type_category = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Storage
+        fields = [
+            'document_id',
+            'name',
+            'document_type',
+            'description',
+            'file',
+            'file_url',
+            'preview_url',
+            'can_preview',
+            'file_size',
+            'file_size_display',
+            'file_extension',
+            'file_icon',
+            'file_type_category',
+            'original_filename',
+            'uploaded_by',
+            'uploaded_by_name',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = [
+            'document_id', 'file_size', 'file_extension', 'original_filename',
+            'uploaded_by', 'created_at', 'updated_at', 'file_icon', 'file_type_category'
+        ]
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+    def get_preview_url(self, obj):
+        request = self.context.get('request')
+        if obj.can_preview() and request:
+            return request.build_absolute_uri(f"/api/storage/{obj.document_id}/preview/")
+        return None
+
+    def validate_file(self, value):
+        """Validate uploaded file"""
+        # Check file extension
+        ext = os.path.splitext(value.name)[1].lower().replace('.', '')
+        if ext not in Storage.ALLOWED_EXTENSIONS:
+            raise serializers.ValidationError(
+                f"File type '{ext}' is not allowed. "
+                f"Allowed types: {', '.join(Storage.ALLOWED_EXTENSIONS)}"
+            )
+        
+        # Check file size (50MB max)
+        max_size = 500 * 1024 * 1024
+        if value.size > max_size:
+            raise serializers.ValidationError(f"File size must be less than 500MB.")
+        
+        return value
+
+    def create(self, validated_data):
+        # Extract the actual user instance from the wrapper
+        request = self.context.get('request')
+        user_obj = request.user
+        
+        # If it's a wrapper, get the underlying user object
+        if hasattr(user_obj, '_obj'):
+            user = user_obj._obj
+        else:
+            user = user_obj
+        
+        validated_data['uploaded_by'] = user
+        return super().create(validated_data)

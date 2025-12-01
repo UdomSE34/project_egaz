@@ -11,20 +11,124 @@ from django.contrib.auth.hashers import check_password
 from .serializers import *
 from django.http import HttpResponse
 from datetime import date, timedelta
-from .models import Schedule
 from .services.pdf_service import PdfService  # 👈 import your PdfService
 from .services.salary_pdf_service import generate_salary_pdf
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .authentication import CustomTokenAuthentication
 from django.views.decorators.csrf import csrf_protect
+from django.db.models import Q
+from django.db import transaction
 
 
 class HotelViewSet(viewsets.ModelViewSet):
     queryset = Hotel.objects.all()
     serializer_class = HotelSerializer
-    authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
-    permission_classes = [IsAuthenticated]  # Only authenticated users/clients can access
+    authentication_classes = [CustomTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        TEMPORARY: Return all hotels for testing
+        """
+        print("🔍 TEMPORARY: Returning ALL hotels")
+        return Hotel.objects.all()
+
+    @action(detail=False, methods=['get'])
+    def unclaimed_hotels(self, request):
+        try:
+            search = request.query_params.get("search", "").strip()
+
+            hotels = Hotel.objects.filter(client__isnull=True)
+
+            if search:
+                hotels = hotels.filter(
+                    Q(name__icontains=search) |
+                    Q(address__icontains=search)
+                )
+
+            serializer = self.get_serializer(hotels, many=True)
+            return Response(serializer.data)
+
+        except Exception as e:
+            print("❌ ERROR:", e)
+            return Response(
+                {"detail": "Failed to load unclaimed hotels."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['patch'])
+    def claim_hotels(self, request):
+        """
+        Client claims hotels – also update or create invoices for claimed hotels
+        """
+        try:
+            client = request.user
+            hotel_ids = request.data.get("hotel_ids", [])
+
+            if not hotel_ids:
+                return Response(
+                    {"detail": "Chagua hoteli unazodai."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            unclaimed_hotels = Hotel.objects.filter(
+                hotel_id__in=hotel_ids,
+                client__isnull=True
+            )
+
+            claimed_count = unclaimed_hotels.count()
+
+            if claimed_count == 0:
+                return Response(
+                    {"detail": "Hakuna hoteli zilizopatikana kwa kudaiwa."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            updated_invoices_count = 0
+            current_month = datetime.now().month
+            current_year = datetime.now().year
+
+            with transaction.atomic():
+                # 1️⃣ Assign hotels to client
+                unclaimed_hotels.update(client=client)
+
+                # 2️⃣ Update existing invoices or create new ones
+                for hotel in unclaimed_hotels:
+                    invoice = Invoice.objects.filter(
+                        hotel=hotel,
+                        month=current_month,
+                        year=current_year
+                    ).first()
+
+                    if invoice:
+                        invoice.client = client
+                        invoice.save()
+                    else:
+                        Invoice.objects.create(
+                            hotel=hotel,
+                            client=client,
+                            status='not_sent',
+                            month=current_month,
+                            year=current_year,
+                            files=[]
+                        )
+                    updated_invoices_count += 1
+
+            return Response({
+                "message": f"Umekudai hoteli {claimed_count} kikamilifu!",
+                "claimed_count": claimed_count,
+                "invoices_updated": updated_invoices_count
+            })
+
+        except Exception as e:
+            print("❌ ERROR:", e)
+            return Response(
+                {"detail": "Hitilafu imetokea wakati wa kudai hoteli."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -36,6 +140,8 @@ from .utils import (
     send_hotel_approved_email,
     send_hotel_rejected_email,
 )
+
+
 from .authentication import CustomTokenAuthentication
 
 
@@ -272,6 +378,121 @@ class ClientViewSet(viewsets.ModelViewSet):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+# clients/views_admin.py - For admin/staff management
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+import secrets
+import logging
+from django.contrib.auth.hashers import make_password
+
+from .models import Client, AuthToken
+from .serializers import ClientManagementSerializer
+
+logger = logging.getLogger(__name__)
+
+class ClientManagementViewSet(viewsets.ModelViewSet):
+    """
+    ADMIN/STAFF API - For managing clients (CRUD operations)
+    """
+    queryset = Client.objects.all().order_by('-created_at')
+    serializer_class = ClientManagementSerializer
+    authentication_classes = [CustomTokenAuthentication]  # Token auth
+    permission_classes = [IsAuthenticated]  # Default
+
+    def get_queryset(self):
+        """
+        Return all clients for admin/staff
+        """
+        return Client.objects.all().order_by('-created_at')
+
+    @action(detail=False, methods=['get'], url_path='list-all')
+    def list_all_clients(self, request):
+        """
+        ADMIN: Get all clients with pagination
+        """
+        try:
+            clients = self.get_queryset()
+            
+            # Debug info
+            print(f"📊 Admin fetching {clients.count()} clients")
+            
+            page = self.paginate_queryset(clients)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+
+            serializer = self.get_serializer(clients, many=True)
+            return Response({
+                "count": clients.count(),
+                "clients": serializer.data
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in admin list_all_clients: {e}")
+            return Response(
+                {"error": "Failed to fetch clients", "details": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def create(self, request):
+        """
+        ADMIN: Create new client
+        """
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            client = serializer.save(role='client')
+            
+            # Create auth token
+            token = AuthToken.objects.create(
+                client=client,
+                token=secrets.token_hex(32)
+            )
+            
+            response_data = {
+                "message": "Client created successfully by admin",
+                "client_id": client.client_id,
+                "token": token.token
+            }
+            return Response(response_data, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def update(self, request, *args, **kwargs):
+        """
+        ADMIN: Update client information
+        """
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        
+        if serializer.is_valid():
+            # Handle password hashing if password is being updated
+            if 'password' in request.data and request.data['password']:
+                if not request.data['password'].startswith('pbkdf2_'):
+                    request.data['password'] = make_password(request.data['password'])
+            
+            self.perform_update(serializer)
+            return Response({
+                "message": "Client updated successfully by admin", 
+                "client": serializer.data
+            })
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        ADMIN: Delete client
+        """
+        instance = self.get_object()
+        client_name = instance.name
+        self.perform_destroy(instance)
+        
+        return Response({
+            "message": f"Client '{client_name}' deleted successfully by admin"
+        }, status=status.HTTP_200_OK)
+
 
 class WasteTypeViewSet(viewsets.ModelViewSet):
     queryset = WasteType.objects.all()
@@ -297,15 +518,16 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
     authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
     permission_classes = [IsAuthenticated] # Only authenticated users/clients can access
    
-    
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
+from django.http import HttpResponse
 from .authentication import CustomTokenAuthentication
 from .models import Schedule
 from .serializers import ScheduleSerializer
 from .utils import send_apology_email
+from .services.pdf_service import PdfService  # Import your PDF service
 from datetime import datetime, timedelta
 import logging
 
@@ -318,6 +540,39 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     authentication_classes = [CustomTokenAuthentication]
     permission_classes = [IsAuthenticated]
     lookup_field = "schedule_id"
+
+    # ✅ Download filtered PDF
+    @action(detail=False, methods=["post"])
+    def download_filtered_pdf(self, request):
+        try:
+            addresses_filter = request.data.get("addresses", [])
+            
+            # Get all pending schedules
+            schedules = Schedule.objects.filter(status="Pending").select_related('hotel')
+            
+            # Generate PDF with filters
+            pdf_content = PdfService.generate_pdf(
+                schedules=schedules,
+                addresses_filter=addresses_filter,
+                last_two_days_only=True
+            )
+            
+            # Create filename based on filter
+            if addresses_filter:
+                filename = f"{'_'.join([addr.replace(' ', '_') for addr in addresses_filter])}_schedules.pdf"
+            else:
+                filename = "all_hotels_schedules.pdf"
+            
+            response = HttpResponse(pdf_content, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+            
+        except Exception as e:
+            logger.error(f"PDF generation error: {str(e)}")
+            return Response(
+                {"error": "Failed to generate PDF"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     # ✅ Update visibility for all schedules of a hotel (by hotel ID)
     @action(detail=False, methods=["patch"])
@@ -334,7 +589,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
-    # ✅ Send today’s apology messages (by hotel ID)
+    # ✅ Send today's apology messages (by hotel ID)
     @action(detail=False, methods=["post"])
     def send_today_message(self, request):
         today_name = datetime.now().strftime('%A')
@@ -358,7 +613,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
-    # ✅ Send tomorrow’s apology messages (by hotel ID)
+    # ✅ Send tomorrow's apology messages (by hotel ID)
     @action(detail=False, methods=["post"])
     def send_tomorrow_message(self, request):
         tomorrow_name = (datetime.now() + timedelta(days=1)).strftime('%A')
@@ -381,7 +636,8 @@ class ScheduleViewSet(viewsets.ModelViewSet):
             {"message": f"{sent_count} apology emails sent for tomorrow.", "hotels": sent_hotels},
             status=status.HTTP_200_OK
         )
-
+        
+        
     
 from rest_framework import viewsets, serializers
 from rest_framework.decorators import action
@@ -1315,19 +1571,17 @@ class PublicDocumentViewSet(viewsets.ReadOnlyModelViewSet):
             Q(processed_payment_report__isnull=False)
         ).order_by('-month')
         
-        
-        
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
 from django.http import HttpResponse
+from datetime import datetime
+import os
+import uuid
+import zipfile
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib import colors
-from reportlab.platypus import Table, TableStyle
-from datetime import date, datetime, timedelta
-import calendar
 
 from egaz_app.models import Invoice, Hotel, Client
 from egaz_app.serializers import InvoiceSerializer
@@ -1341,8 +1595,9 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def generate_for_month(self, request):
         """
-        Generate default invoices for all hotels for the given month/year.
-        Expects JSON: { "month": "2025-11" }  # YYYY-MM format
+        Generate invoices for all hotels for the given month/year.
+        IMPORTANT:
+        - If hotel has NO client → invoice.client = None
         """
         month_str = request.data.get("month")
         if not month_str:
@@ -1358,25 +1613,24 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         hotels = Hotel.objects.all()
         created_count = 0
 
-        # Fallback client if hotel has no client
-        fallback_client = Client.objects.first()
-        if not fallback_client:
-            return Response({"detail": "No clients exist in the database. Please create at least one client."},
-                           status=status.HTTP_400_BAD_REQUEST)
-
         for hotel in hotels:
-            client = getattr(hotel, 'client', None) or fallback_client
 
             invoice, created = Invoice.objects.get_or_create(
-               hotel=hotel,
-               month=month,
-               year=year,
-               defaults={
-                   "client": client,
-                   "amount": 0,
-                   "status": "not_sent"
+                hotel=hotel,
+                month=month,
+                year=year,
+                defaults={
+                    "client": hotel.client if hotel.client else None,   # 🔥 FIXED
+                    "status": "not_sent",
+                    "files": []
                 }
             )
+
+            # If invoice exists but client is missing, update it
+            if not created and invoice.client is None and hotel.client:
+                invoice.client = hotel.client
+                invoice.save()
+
             if created:
                 created_count += 1
 
@@ -1384,50 +1638,255 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             {"detail": f"{created_count} invoices generated for {month_str}"},
             status=status.HTTP_201_CREATED
         )
+
+    # 🔥 UPLOAD FILES - NO SIZE LIMITS
+    @action(detail=True, methods=['post'])
+    def upload_files(self, request, pk=None):
+        invoice = self.get_object()
+        uploaded_files = request.FILES.getlist('files')
         
+        if not uploaded_files:
+            return Response({"detail": "No files provided."}, status=status.HTTP_400_BAD_REQUEST)
         
-    # 🔹 Admin: Kutuma invoice baada ya kuweka amount & month
+        saved_files = []
+        
+        for file in uploaded_files:
+            file_extension = os.path.splitext(file.name)[1]
+            unique_filename = f"invoices/{uuid.uuid4()}{file_extension}"
+            file_path = default_storage.save(unique_filename, ContentFile(file.read()))
+            file_url = request.build_absolute_uri(default_storage.url(file_path))
+            
+            file_info = {
+                'id': str(uuid.uuid4()),
+                'name': file.name,
+                'url': file_url,
+                'uploaded_at': datetime.now().isoformat()
+            }
+            
+            if not invoice.files:
+                invoice.files = []
+            
+            invoice.files.append(file_info)
+            saved_files.append(file_info)
+        
+        invoice.save()
+        
+        return Response({
+            "message": f"Successfully uploaded {len(saved_files)} files",
+            "uploaded_files": saved_files,
+            "total_files": len(invoice.files)
+        }, status=status.HTTP_201_CREATED)
+
+    # 🔥 REMOVE FILE
+    @action(detail=True, methods=['post'])
+    def remove_file(self, request, pk=None):
+        invoice = self.get_object()
+        file_id = request.data.get('file_id')
+        
+        if not file_id:
+            return Response({"detail": "File ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not invoice.files:
+            return Response({"detail": "No files to remove."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        file_to_remove = None
+        updated_files = []
+        
+        for file_info in invoice.files:
+            if file_info.get('id') == file_id:
+                file_to_remove = file_info
+            else:
+                updated_files.append(file_info)
+        
+        if file_to_remove:
+            try:
+                if 'media/' in file_to_remove.get('url'):
+                    file_path = file_to_remove.get('url').split('media/')[-1]
+                else:
+                    file_path = file_to_remove.get('url').split('/media/')[-1]
+                default_storage.delete(file_path)
+            except Exception as e:
+                print(f"Error deleting file: {e}")
+            
+            invoice.files = updated_files
+            invoice.save()
+            
+            return Response({
+                "message": f"File '{file_to_remove.get('name')}' removed successfully",
+                "remaining_files": len(invoice.files)
+            }, status=status.HTTP_200_OK)
+        
+        return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # 🔥 SEND INVOICE
     @action(detail=True, methods=['post'])
     def send_invoice(self, request, pk=None):
         invoice = self.get_object()
-        amount = request.data.get('amount')
-        month = request.data.get('month')
-        year = request.data.get('year')
 
-        if amount:
-            invoice.amount = amount
-        if month:
-            invoice.month = int(month)
-        if year:
-            invoice.year = int(year)
+        if not invoice.files:
+            return Response({
+                "detail": "Cannot send invoice without files. Please upload files first."
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         invoice.status = 'sent'
         invoice.save()
 
-        # 🔥 SEND EMAILS TO BOTH CLIENT AND HOTEL
-        email_results = send_invoice_to_both_parties(invoice)
+        # Only send emails if invoice has a client
+        if invoice.client:
+            email_results = send_invoice_to_both_parties(invoice, request)
+        else:
+            email_results = "Invoice has no client assigned"
 
         return Response({
-            'message': 'Invoice sent successfully and notifications delivered.', 
+            'message': 'Invoice sent successfully.',
             'status': invoice.status,
+            'files_count': len(invoice.files),
             'emails_sent': email_results
         }, status=status.HTTP_200_OK)
 
-    # 🔹 Kubadilisha status ya invoice manually
+    # 🔥 BULK SEND INVOICES
+    @action(detail=False, methods=['post'])
+    def bulk_send(self, request):
+        invoice_ids = request.data.get('invoice_ids', [])
+        results = []
+        
+        for invoice_id in invoice_ids:
+            try:
+                invoice = Invoice.objects.get(invoice_id=invoice_id)
+                
+                if not invoice.files:
+                    results.append({
+                        'invoice_id': str(invoice.invoice_id),
+                        'hotel': invoice.hotel.name,
+                        'error': 'No files uploaded'
+                    })
+                    continue
+                
+                invoice.status = 'sent'
+                invoice.save()
+                
+                if invoice.client:
+                    email_results = send_invoice_to_both_parties(invoice, request)
+                else:
+                    email_results = "Invoice has no client assigned"
+                
+                results.append({
+                    'invoice_id': str(invoice.invoice_id),
+                    'hotel': invoice.hotel.name,
+                    'files_count': len(invoice.files),
+                    'emails_sent': email_results,
+                    'status': 'sent'
+                })
+                
+            except Invoice.DoesNotExist:
+                results.append({'invoice_id': invoice_id, 'error': 'Invoice not found'})
+            except Exception as e:
+                results.append({'invoice_id': invoice_id, 'error': str(e)})
+        
+        return Response({
+            'message': f'Processed {len(results)} invoices',
+            'results': results
+        }, status=status.HTTP_200_OK)
+
+    # 🔥 MARK RECEIVED
+    @action(detail=True, methods=['post'])
+    def mark_received(self, request, pk=None):
+        invoice = self.get_object()
+        comment = request.data.get("comment", "")
+
+        invoice.is_received = True
+        invoice.status = 'received'
+        if comment:
+            invoice.comment = comment
+        invoice.save()
+
+        return Response({
+            "message": "Invoice marked as received",
+            "files_count": len(invoice.files)
+        }, status=status.HTTP_200_OK)
+
+    # 🔥 ZIP DOWNLOAD
+    @action(detail=True, methods=['get'])
+    def download_files(self, request, pk=None):
+        invoice = self.get_object()
+        
+        if not invoice.files:
+            return Response({"detail": "No files available for download."}, 
+                           status=status.HTTP_404_NOT_FOUND)
+        
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for file_info in invoice.files:
+                try:
+                    if 'media/' in file_info.get('url'):
+                        file_path = file_info.get('url').split('media/')[-1]
+                    else:
+                        file_path = file_info.get('url').split('/media/')[-1]
+                    
+                    if default_storage.exists(file_path):
+                        file_content = default_storage.open(file_path).read()
+                        zip_file.writestr(file_info.get('name'), file_content)
+                except Exception as e:
+                    print(f"Error reading file {file_info.get('name')}: {e}")
+                    continue
+        
+        zip_buffer.seek(0)
+        
+        response = HttpResponse(zip_buffer, content_type='application/zip')
+        response['Content-Disposition'] = (
+            f'attachment; filename="invoice_files_{invoice.hotel.name}_{invoice.month}_{invoice.year}.zip"'
+        )
+        return response
+
+    # 🔥 GET SINGLE FILE
+    @action(detail=True, methods=['get'])
+    def get_file(self, request, pk=None):
+        invoice = self.get_object()
+        file_id = request.query_params.get('file_id')
+        
+        if not file_id:
+            return Response({"detail": "File ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        file_info = None
+        for f in invoice.files:
+            if f.get('id') == file_id:
+                file_info = f
+                break
+        
+        if not file_info:
+            return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        try:
+            if 'media/' in file_info.get('url'):
+                file_path = file_info.get('url').split('media/')[-1]
+            else:
+                file_path = file_info.get('url').split('/media/')[-1]
+            
+            if default_storage.exists(file_path):
+                file_content = default_storage.open(file_path).read()
+                response = HttpResponse(file_content, content_type='application/octet-stream')
+                response['Content-Disposition'] = f'attachment; filename="{file_info.get("name")}"'
+                return response
+            else:
+                return Response({"detail": "File not found in storage."}, status=status.HTTP_404_NOT_FOUND)
+                
+        except Exception as e:
+            return Response({"detail": f"Error retrieving file: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # 🔥 UPDATE STATUS
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):
         invoice = self.get_object()
         new_status = request.data.get('status')
 
         if not new_status:
-            return Response({'error': 'Status haikutolewa'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Status is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         invoice.status = new_status
         invoice.save()
         
-        # 🔥 SEND NOTIFICATION IF STATUS CHANGED TO SENT
-        if new_status == 'sent':
-            email_results = send_invoice_to_both_parties(invoice)
+        if new_status == 'sent' and invoice.files and invoice.client:
+            email_results = send_invoice_to_both_parties(invoice, request)
             return Response({
                 'message': f'Status changed to {new_status} and notifications sent.',
                 'emails_sent': email_results
@@ -1435,190 +1894,312 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         
         return Response({'message': f'Status changed to {new_status}'}, status=status.HTTP_200_OK)
 
-    # 🔹 Bulk send invoices
-    @action(detail=False, methods=['post'])
-    def bulk_send(self, request):
-        """
-        Send multiple invoices at once
-        Expects: {"invoice_ids": ["uuid1", "uuid2", ...]}
-        """
-        invoice_ids = request.data.get('invoice_ids', [])
-        results = []
-        
-        for invoice_id in invoice_ids:
-            try:
-                invoice = Invoice.objects.get(invoice_id=invoice_id)
-                invoice.status = 'sent'
-                invoice.save()
-                
-                # Send emails
-                email_results = send_invoice_to_both_parties(invoice)
-                
-                results.append({
-                    'invoice_number': invoice.invoice_number,
-                    'hotel': invoice.hotel.name,
-                    'emails_sent': email_results,
-                    'status': 'sent'
-                })
-                
-            except Invoice.DoesNotExist:
-                results.append({
-                    'invoice_id': invoice_id,
-                    'error': 'Invoice not found'
-                })
-            except Exception as e:
-                results.append({
-                    'invoice_id': invoice_id,
-                    'error': str(e)
-                })
+    # 🔥 STATS
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        total_invoices = Invoice.objects.count()
+        sent_invoices = Invoice.objects.filter(status='sent').count()
+        received_invoices = Invoice.objects.filter(status='received').count()
+        invoices_with_files = Invoice.objects.exclude(files=[]).count()
         
         return Response({
-            'message': f'Processed {len(results)} invoices',
-            'results': results
+            'total_invoices': total_invoices,
+            'sent_invoices': sent_invoices,
+            'received_invoices': received_invoices,
+            'invoices_with_files': invoices_with_files
         }, status=status.HTTP_200_OK)
-
-    # 🔹 Kubadilisha status kuwa received na kudownload PDF
-    @action(detail=True, methods=["post"])
-    def mark_received_and_download(self, request, pk=None):
-        invoice = self.get_object()
-        comment = request.data.get("comment", "")
-
-        invoice.is_received = True
-        if comment:
-            invoice.comment = comment
-        invoice.save()
-
-        hotel_name = invoice.hotel.name if invoice.hotel else "—"
-        hotel_address = invoice.hotel.address if invoice.hotel and invoice.hotel.address else "—"
-        hotel_phone = invoice.hotel.contact_phone if invoice.hotel and invoice.hotel.contact_phone else "—"
-        hotel_email = invoice.hotel.email if invoice.hotel and invoice.hotel.email else "—"
-
-        # Invoice dates
-        invoice_date = date.today()
-        due_date = invoice_date + timedelta(days=7)  # Due in 7 days
-
-        # 🔥 SERVICE PERIOD FOR NEXT MONTH
-        next_month = invoice.month + 1 if invoice.month < 12 else 1
-        next_year = invoice.year if invoice.month < 12 else invoice.year + 1
-        next_month_name = calendar.month_name[next_month]
-        service_period = f"{next_month_name} {next_year}"
-
-        # ========== KUANDAA PROFESSIONAL PDF INVOICE ========== #
-        buffer = BytesIO()
-        p = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-
-        # COMPANY HEADER
-        p.setFont("Helvetica-Bold", 16)
-        p.setFillColor(colors.HexColor("#003366"))
-        p.drawCentredString(width / 2, height - 50, "OFFICIAL TAX INVOICE")
         
-        # Company Info - LEFT SIDE
-        p.setFont("Helvetica-Bold", 12)
-        p.setFillColor(colors.black)
-        p.drawString(50, height - 80, "Company: FOSTER INVESTMENT LTD")
         
-        p.setFont("Helvetica", 10)
-        p.drawString(50, height - 95, "Address: P.O.BOX 1345, HOUSE KS KM 162, AIRPORT ROAD, ZANZIBAR – TANZANIA")
-        p.drawString(50, height - 110, "Contact: +255 716920506 / +255 657 832 327")
-        p.drawString(50, height - 125, "Email: info@fosterinvestment.co.uk")
-        p.drawString(50, height - 140, "ZRA No: Z0000126780")
-        p.drawString(50, height - 155, "VRN No: 07004105Y")
-        p.drawString(50, height - 170, "TIN No: 153-730-806")
-
-        # Invoice Details - RIGHT SIDE
-        p.drawString(350, height - 80, f"Invoice No: {invoice.invoice_number}")
-        p.drawString(350, height - 95, f"Invoice Date: {invoice_date.strftime('%d %b %Y')}")
-        p.drawString(350, height - 110, f"Due Date: {due_date.strftime('%d %b %Y')}")
         
-        # 🔥 SERVICE PERIOD FOR NEXT MONTH
-        p.drawString(350, height - 125, f"Service Period: {service_period}")
-
-        # Separator line
-        p.line(40, height - 180, width - 40, height - 180)
-
-        # BILL TO SECTION
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, height - 200, "BILL TO:")
         
-        p.setFont("Helvetica", 10)
-        p.drawString(50, height - 215, f"{hotel_name}")
-        if hotel_address and hotel_address != "—":
-            p.drawString(50, height - 230, f"{hotel_address}")
-        if hotel_phone and hotel_phone != "—":
-            p.drawString(50, height - 245, f"Phone: {hotel_phone}")
-        if hotel_email and hotel_email != "—":
-            p.drawString(50, height - 260, f"Email: {hotel_email}")
+        
+        
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.db.models import Q
+from django.http import HttpResponse, FileResponse
+from django.shortcuts import get_object_or_404
+import os
 
-        # Separator line
-        p.line(40, height - 275, width - 40, height - 275)
+from .models import Storage, User  # Make sure to import User model
+from .serializers import StorageSerializer
 
-        # INVOICE ITEMS TABLE
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(50, height - 295, "SERVICE DESCRIPTION")
+class StorageViewSet(viewsets.ModelViewSet):
+    queryset = Storage.objects.all()
+    serializer_class = StorageSerializer
 
-        # Table data
-        table_data = [
-            ["Description", "Quantity", "Unit Price (TZS)", "Amount (TZS)"],
-            [
-                f"Waste Management Services - {service_period}",
-                "1 Month",
-                f"{invoice.amount:,.2f}",
-                f"{invoice.amount:,.2f}"
-            ],
+    def get_queryset(self):
+        # Users can only see their own documents
+        # Extract the actual user instance from the wrapper
+        user = self.get_actual_user()
+        return Storage.objects.filter(uploaded_by=user)
+
+    def perform_create(self, serializer):
+        # Extract the actual user instance from the wrapper
+        user = self.get_actual_user()
+        serializer.save(uploaded_by=user)
+
+    def get_actual_user(self):
+        """
+        Extract the actual User instance from the DRFUserWrapper
+        """
+        user_obj = self.request.user
+        
+        # If it's a wrapper, get the underlying user object
+        if hasattr(user_obj, '_obj'):
+            return user_obj._obj
+        return user_obj
+
+    # 🔥 GET /api/storage/by_type/?type={type} - Filter by document type
+    @action(detail=False, methods=['get'])
+    def by_type(self, request):
+        """Get documents filtered by type"""
+        document_type = request.query_params.get('type')
+        if document_type:
+            user = self.get_actual_user()
+            documents = Storage.objects.filter(uploaded_by=user, document_type=document_type)
+            serializer = self.get_serializer(documents, many=True)
+            return Response(serializer.data)
+        return Response({"detail": "Type parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 🔥 GET /api/storage/search/?q={query} - Search documents
+    @action(detail=False, methods=['get'])
+    def search(self, request):
+        """Search documents by name or description"""
+        query = request.query_params.get('q')
+        if query:
+            user = self.get_actual_user()
+            documents = Storage.objects.filter(
+                Q(uploaded_by=user) &
+                (Q(name__icontains=query) | Q(description__icontains=query))
+            )
+            serializer = self.get_serializer(documents, many=True)
+            return Response(serializer.data)
+        return Response({"detail": "Search query is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 🔥 GET /api/storage/{document_id}/download/ - Download document file
+    @action(detail=True, methods=['get'])
+    def download(self, request, pk=None):
+        """Download the document file"""
+        document = self.get_object()
+        
+        if document.file:
+            response = FileResponse(
+                document.file.open('rb'),
+                content_type=document.get_mime_type(),
+                filename=f"{document.name}.{document.file_extension}"
+            )
+            response['Content-Disposition'] = f'attachment; filename="{document.name}.{document.file_extension}"'
+            return response
+        
+        return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # 🔥 GET /api/storage/{document_id}/preview/ - Preview document
+    @action(detail=True, methods=['get'])
+    def preview(self, request, pk=None):
+        """Preview document in browser (for supported file types)"""
+        document = self.get_object()
+        
+        if not document.can_preview():
+            return Response(
+                {"detail": "This file type cannot be previewed in browser."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if document.file:
+            response = FileResponse(
+                document.file.open('rb'),
+                content_type=document.get_mime_type()
+            )
+            response['Content-Disposition'] = f'inline; filename="{document.name}.{document.file_extension}"'
+            return response
+        
+        return Response({"detail": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # 🔥 GET /api/storage/stats/ - Get storage statistics
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """Get storage statistics"""
+        user = self.get_actual_user()
+        user_documents = Storage.objects.filter(uploaded_by=user)
+        total_documents = user_documents.count()
+        total_size = sum(doc.file_size for doc in user_documents)
+        
+        # Documents by type
+        by_type = {}
+        for doc_type, _ in Storage.DOCUMENT_TYPES:
+            count = user_documents.filter(document_type=doc_type).count()
+            by_type[doc_type] = count
+        
+        # Documents by category
+        by_category = {}
+        categories = ['document', 'spreadsheet', 'presentation', 'image', 'archive', 'other']
+        for category in categories:
+            count = user_documents.filter(file_type_category=category).count()
+            by_category[category] = count
+        
+        return Response({
+            'total_documents': total_documents,
+            'total_size': total_size,
+            'total_size_display': self.format_file_size(total_size),
+            'documents_by_type': by_type,
+            'documents_by_category': by_category
+        })
+
+    # 🔥 GET /api/storage/categories/ - Get document categories
+    @action(detail=False, methods=['get'])
+    def categories(self, request):
+        """Get available document categories"""
+        categories = [
+            {'value': 'document', 'label': 'Documents', 'icon': '📝'},
+            {'value': 'spreadsheet', 'label': 'Spreadsheets', 'icon': '📊'},
+            {'value': 'presentation', 'label': 'Presentations', 'icon': '📑'},
+            {'value': 'image', 'label': 'Images', 'icon': '🖼️'},
+            {'value': 'archive', 'label': 'Archives', 'icon': '📦'},
+            {'value': 'other', 'label': 'Other', 'icon': '📎'}
         ]
+        return Response(categories)
 
-        table = Table(table_data, colWidths=[250, 80, 100, 100])
-        style = TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-            ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ALIGN", (0, 1), (0, -1), "LEFT"),  # Left align description
-        ])
-        table.setStyle(style)
-        table.wrapOn(p, width, height)
-        table.drawOn(p, 50, height - 350)
+    # 🔥 GET /api/storage/types/ - Get document types
+    @action(detail=False, methods=['get'])
+    def types(self, request):
+        """Get available document types"""
+        types_list = [
+            {'value': type_value, 'label': type_label}
+            for type_value, type_label in Storage.DOCUMENT_TYPES
+        ]
+        return Response(types_list)
 
-        # TOTAL AMOUNT SECTION (WITHOUT VAT)
-        p.setFont("Helvetica-Bold", 14)
-        p.drawString(350, height - 380, "TOTAL AMOUNT:")
-        p.drawString(480, height - 380, f"TZS {invoice.amount:,.2f}")
-
-        # PAYMENT INSTRUCTIONS
-        p.setFont("Helvetica-Bold", 11)
-        p.drawString(50, height - 420, "PAYMENT INSTRUCTIONS:")
+    def format_file_size(self, size_bytes):
+        """Format file size for display"""
+        if size_bytes == 0:
+            return "0 Bytes"
         
-        p.setFont("Helvetica", 10)
-        p.drawString(50, height - 435, "1. Bank Transfer: CRDB Bank, Account: 0151032789300")
-        p.drawString(50, height - 450, "2. Mobile Money: M-Pesa / Tigo Pesa / Airtel Money")
-
-        # TERMS AND CONDITIONS
-        p.setFont("Helvetica-Bold", 11)
-        p.drawString(50, height - 490, "TERMS & CONDITIONS:")
+        size_names = ['Bytes', 'KB', 'MB', 'GB']
+        i = 0
+        size = size_bytes
         
-        p.setFont("Helvetica", 9)
-        p.drawString(50, height - 505, "• Payment due within 7 days of invoice date")
-        p.drawString(50, height - 535, "• Services may be suspended for overdue accounts")
+        while size >= 1024 and i < len(size_names) - 1:
+            size /= 1024
+            i += 1
+            
+        return f"{size:.2f} {size_names[i]}"
+    
+# clients/views_client.py - For client self-management
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.contrib.auth.hashers import check_password, make_password  # Add make_password import
 
-        # FOOTER
-        p.setStrokeColor(colors.grey)
-        p.line(40, 60, width - 40, 80)
-        p.setFont("Helvetica", 8)
-        p.setFillColor(colors.grey)
-        p.drawCentredString(width / 2, 65, "Thank you for your business!")
-        p.drawCentredString(width / 2, 50, "For any inquiries, contact: +255 716920506 / +255 657 832 327 | Email: info@fosterinvestment.co.uk")
-        p.drawCentredString(width / 2, 35, f"© {date.today().year} Foster Investment Ltd - All Rights Reserved")
+from .models import Client
+from .serializers import ClientProfileSerializer, ClientPasswordChangeSerializer
 
-        # SAVE PDF
-        p.showPage()
-        p.save()
-        buffer.seek(0)
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def client_profile(request):
+    """
+    Client can view and update their own profile
+    """
+    try:
+        # Assuming the authenticated user is a Client instance
+        client = request.user
+        
+        if request.method == 'GET':
+            serializer = ClientProfileSerializer(client)
+            return Response(serializer.data)
+            
+        elif request.method == 'PUT':
+            serializer = ClientProfileSerializer(client, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({
+                    "message": "Profile updated successfully",
+                    "client": serializer.data
+                })
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+    except Client.DoesNotExist:
+        return Response(
+            {"error": "Client not found"}, 
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
-        response = HttpResponse(buffer, content_type="application/pdf")
-        response['Content-Disposition'] = f'attachment; filename=\"invoice_{invoice.invoice_number}.pdf\"'
-        return response        
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """
+    Client can change their password
+    """
+    try:
+        client = request.user
+        serializer = ClientPasswordChangeSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            current_password = serializer.validated_data['current_password']
+            new_password = serializer.validated_data['new_password']
+            
+            # Verify current password
+            if not check_password(current_password, client.password):
+                return Response(
+                    {"error": "Current password is incorrect"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # FIX: Use make_password instead of set_password
+            client.password = make_password(new_password)
+            client.save()
+            
+            return Response({"message": "Password changed successfully"})
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    except Client.DoesNotExist:
+        return Response(
+            {"error": "Client not found"}, 
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        print(f"Error in change_password: {str(e)}")  # Add debug logging
+        return Response(
+            {"error": "Internal server error. Please try again."}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def client_dashboard(request):
+    """
+    Get client dashboard data
+    """
+    try:
+        client = request.user
+        
+        # Add any dashboard data you want to return
+        dashboard_data = {
+            "client_name": client.name,
+            "email": client.email,
+            "phone": client.phone,
+            "client_id": client.client_id,
+            "total_orders": 0,  # Add your logic here
+            "pending_orders": 0, # Add your logic here
+            "recent_activity": [] # Add your logic here
+        }
+        return Response(dashboard_data)
+        
+    except Client.DoesNotExist:
+        return Response(
+            {"error": "Client not found"}, 
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

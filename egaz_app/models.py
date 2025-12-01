@@ -64,10 +64,10 @@ class Hotel(models.Model):
     contact_phone = models.CharField(max_length=20)
     
     collection_frequency = models.CharField(max_length=50, default="daily")
-    total_rooms = models.IntegerField(default=0)
+    total_rooms = models.IntegerField(default=0, blank=True, null=True)
     type = models.CharField(max_length=50, default="hotel")
-    waste_per_day = models.IntegerField(default=0)
-    currency = models.CharField(max_length=10, default="TZS")
+    waste_per_day = models.IntegerField( blank=True, null=True)
+    currency = models.CharField(max_length=10, default="TZS", blank=True, null=True)
     payment_account = models.CharField(max_length=100, default="N/A")
     hadhi = models.CharField(max_length=50, default="normal")
 
@@ -88,13 +88,13 @@ class PendingHotel(models.Model):
     address = models.TextField()
     email = models.EmailField(blank=True, null=True)
     contact_phone = models.CharField(max_length=20)
-    hadhi = models.CharField(max_length=50)
-    total_rooms = models.IntegerField(default=0)
-    type = models.CharField(max_length=50)
+    hadhi = models.CharField(max_length=50, blank=True, null=True)
+    total_rooms = models.IntegerField(default=0, blank=True, null=True)
+    type = models.CharField(max_length=50, blank=True, null=True)
     waste_per_day = models.IntegerField(default=0)
     collection_frequency = models.CharField(max_length=50, default="daily")
     currency = models.CharField(max_length=10, default="TZS")
-    payment_account = models.CharField(max_length=100, default="N/A")
+    payment_account = models.CharField(max_length=100, default="N/A", blank=True, null=True)
     status = models.CharField(
         max_length=20,
         choices=[("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")],
@@ -137,7 +137,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     # Extra details
     date_of_birth = models.DateField(null=True, blank=True)
-    national_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    national_id = models.CharField(max_length=50, null=True, blank=True)
 
     # Emergency contact
     emergency_contact_name = models.CharField(max_length=100, null=True, blank=True)
@@ -703,6 +703,7 @@ class FailedLoginAttempt(models.Model):
             return False
         return True
 
+
 from django.db import models
 import uuid
 from datetime import datetime, date
@@ -718,26 +719,24 @@ class Invoice(models.Model):
 
     invoice_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
-    # 🔥 TEMPORARY: Remove unique constraint for migration
-    invoice_number = models.CharField(
-        max_length=20, 
-        unique=True,  # 🔥 CHANGE TO FALSE FIRST
-        blank=True,
-        null=True,     # 🔥 ADD NULL TRUE
-        help_text="Auto-generated invoice number (FI-INV-YYYY-MM-NNNN)"
-    )
-    
+    # 🔥 REMOVED: invoice_number, amount fields
     hotel = models.ForeignKey('Hotel', on_delete=models.CASCADE, related_name='invoices')
-    client = models.ForeignKey('Client', on_delete=models.CASCADE, related_name='invoices')
-    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    client = models.ForeignKey('Client', null=True, blank=True, on_delete=models.CASCADE, related_name='invoices')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='not_sent')
     comment = models.TextField(blank=True, null=True)
+
+    # 🔥 SINGLE FIELD FOR MULTIPLE FILES - NO SIZE LIMITS
+    files = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of file information: [{'name': 'file1.pdf', 'url': '/media/invoices/file1.pdf'}]"
+    )
 
     month = models.IntegerField(default=datetime.now().month)
     year = models.IntegerField(default=datetime.now().year)
 
     is_recurring = models.BooleanField(default=True)
-    is_received = models.BooleanField(default=False)
+    # 🔥 REMOVED: is_received field - using status field instead
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -747,50 +746,14 @@ class Invoice(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.invoice_number or 'No Number'} - {self.hotel.name}"
+        return f"Invoice - {self.hotel.name} - {self.get_month_display()} {self.year}"
 
-    # ... rest of your methods remain the same
-    def save(self, *args, **kwargs):
-        """
-        Auto-generate invoice number before saving if it doesn't exist
-        """
-        if not self.invoice_number:
-            self.invoice_number = self.generate_invoice_number()
-        super().save(*args, **kwargs)
-
-    def generate_invoice_number(self):
-        """
-        Generate unique invoice number in format: FI-INV-YYYY-MM-NNNN
-        """
-        from django.db.models import Max
-        import datetime
-        
-        current_year = self.year or datetime.datetime.now().year
-        current_month = self.month or datetime.datetime.now().month
-        
-        # Format: FI-INV-YYYY-MM
-        base_prefix = f"FI-INV-{current_year}-{current_month:02d}"
-        
-        # Find the highest sequence number for this month
-        last_invoice = Invoice.objects.filter(
-            invoice_number__startswith=base_prefix
-        ).order_by('-invoice_number').first()
-        
-        if last_invoice and last_invoice.invoice_number:
-            try:
-                # Extract the sequence number from existing invoice
-                last_seq = int(last_invoice.invoice_number.split('-')[-1])
-                next_seq = last_seq + 1
-            except (ValueError, IndexError):
-                next_seq = 1
-        else:
-            next_seq = 1
-        
-        # Format with leading zeros: 0001, 0002, etc.
-        sequence_str = f"{next_seq:04d}"
-        
-        return f"{base_prefix}-{sequence_str}"
-    
+    def get_month_display(self):
+        """Get month name for display"""
+        try:
+            return datetime(self.year, self.month, 1).strftime('%B')
+        except:
+            return "Unknown"
     
     def get_service_period_display(self):
         """Get service period for next month"""
@@ -799,14 +762,254 @@ class Invoice(models.Model):
         next_month_name = datetime(next_year, next_month, 1).strftime('%B')
         return f"{next_month_name} {next_year}"
     
-    def get_due_date(self):
-        """Calculate due date (7 days from now)"""
-        due_date = datetime.now() + timedelta(days=7)
-        return due_date.strftime('%d %b %Y')
+    def add_file(self, file_instance):
+        """Add a file to the files JSON field"""
+        file_info = {
+            'id': str(uuid.uuid4()),
+            'name': file_instance.name,
+            'url': file_instance.url,
+            'uploaded_at': datetime.now().isoformat()
+        }
+        
+        if not self.files:
+            self.files = []
+        
+        self.files.append(file_info)
+        self.save()
     
-    def send_notification_emails(self):
-        """Send emails to both client and hotel"""
-        from .services.email_service import send_invoice_to_both_parties
-        return send_invoice_to_both_parties(self)
+    def remove_file(self, file_id):
+        """Remove a file from the files JSON field"""
+        if self.files:
+            self.files = [f for f in self.files if f.get('id') != file_id]
+            self.save()
 
+    # 🔥 NEW: Helper property to check if invoice is received
+    @property
+    def is_received(self):
+        """Check if invoice status is 'received'"""
+        return self.status == 'received'
 
+    # 🔥 NEW: Helper property to check if invoice is sent
+    @property
+    def is_sent(self):
+        """Check if invoice status is 'sent'"""
+        return self.status == 'sent'
+
+    # 🔥 NEW: Helper property to check if invoice is approved
+    @property
+    def is_approved(self):
+        """Check if invoice status is 'approved'"""
+        return self.status == 'approved'
+    
+
+from django.db import models
+import uuid
+from datetime import datetime
+from django.core.exceptions import ValidationError
+import os
+
+class Storage(models.Model):
+    DOCUMENT_TYPES = [
+        ('contract', 'Contract'),
+        ('agreement', 'Agreement'),
+        ('license', 'License'),
+        ('certificate', 'Certificate'),
+        ('report', 'Report'),
+        ('invoice', 'Invoice'),
+        ('receipt', 'Receipt'),
+        ('proposal', 'Proposal'),
+        ('quotation', 'Quotation'),
+        ('policy', 'Policy'),
+        ('manual', 'Manual'),
+        ('presentation', 'Presentation'),
+        ('spreadsheet', 'Spreadsheet'),
+        ('other', 'Other'),
+    ]
+
+    # Allowed file extensions
+    ALLOWED_EXTENSIONS = [
+        # Documents
+        'pdf', 'doc', 'docx', 'txt', 'rtf',
+        # Spreadsheets
+        'xls', 'xlsx', 'csv',
+        # Presentations
+        'ppt', 'pptx',
+        # Images (for document scans)
+        'jpg', 'jpeg', 'png', 'gif',
+        # Archives
+        'zip', 'rar'
+    ]
+
+    document_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    document_type = models.CharField(max_length=50, choices=DOCUMENT_TYPES, default='other')
+    description = models.TextField(blank=True, null=True)
+    
+    # File field to store the actual document with validation
+    file = models.FileField(
+        upload_to='storage/documents/%Y/%m/%d/',
+        help_text=f"Allowed file types: {', '.join(ALLOWED_EXTENSIONS)}"
+    )
+    
+    # Store file metadata
+    file_size = models.BigIntegerField(default=0)  # in bytes
+    file_extension = models.CharField(max_length=10, blank=True)
+    original_filename = models.CharField(max_length=255, blank=True)
+    file_type_category = models.CharField(max_length=20, blank=True)  # ADD THIS FIELD
+    
+    # User who uploaded the document
+    uploaded_by = models.ForeignKey('User', on_delete=models.CASCADE, related_name='documents')
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Storage Document'
+        verbose_name_plural = 'Storage Documents'
+        indexes = [
+            models.Index(fields=['document_type', 'created_at']),
+            models.Index(fields=['uploaded_by', 'created_at']),
+            models.Index(fields=['file_type_category']),  # ADD THIS INDEX
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_document_type_display()})"
+
+    def clean(self):
+        """Validate file type before saving"""
+        if self.file:
+            # Get file extension
+            ext = self.get_file_extension(self.file.name)
+            if ext.lower() not in self.ALLOWED_EXTENSIONS:
+                raise ValidationError(
+                    f"File type '{ext}' is not allowed. "
+                    f"Allowed types: {', '.join(self.ALLOWED_EXTENSIONS)}"
+                )
+            
+            # Validate file size (e.g., 50MB max)
+            max_size = 50 * 1024 * 1024  # 50MB
+            if self.file.size > max_size:
+                raise ValidationError(f"File size must be less than 50MB. Current size: {self.file.size} bytes")
+
+    def save(self, *args, **kwargs):
+        # Handle DRFUserWrapper in uploaded_by field
+        if hasattr(self.uploaded_by, '_obj'):
+            self.uploaded_by = self.uploaded_by._obj
+        
+        # Auto-set file metadata before saving
+        if self.file:
+            self.file_size = self.file.size
+            self.file_extension = self.get_file_extension(self.file.name)
+            self.original_filename = self.file.name
+            self.file_type_category = self.get_file_type_category()  # SET THE CATEGORY
+            
+            # If name is not set, use the original filename without extension
+            if not self.name:
+                self.name = os.path.splitext(self.original_filename)[0]
+        
+        # Run full validation
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def get_file_extension(filename):
+        """Extract file extension from filename"""
+        return filename.split('.')[-1].lower() if '.' in filename else ''
+
+    def get_file_size_display(self):
+        """Return human-readable file size"""
+        if self.file_size == 0:
+            return "0 Bytes"
+        
+        size_names = ['Bytes', 'KB', 'MB', 'GB']
+        i = 0
+        size = self.file_size
+        
+        while size >= 1024 and i < len(size_names) - 1:
+            size /= 1024
+            i += 1
+            
+        return f"{size:.2f} {size_names[i]}"
+
+    def get_file_icon(self):
+        """Return appropriate icon based on file extension"""
+        icon_map = {
+            'pdf': '📄',
+            'doc': '📝',
+            'docx': '📝',
+            'txt': '📃',
+            'rtf': '📃',
+            'xls': '📊',
+            'xlsx': '📊',
+            'csv': '📊',
+            'ppt': '📑',
+            'pptx': '📑',
+            'jpg': '🖼️',
+            'jpeg': '🖼️',
+            'png': '🖼️',
+            'gif': '🖼️',
+            'zip': '📦',
+            'rar': '📦',
+        }
+        return icon_map.get(self.file_extension, '📎')
+
+    def get_file_type_category(self):
+        """Categorize file by type for better organization"""
+        document_extensions = ['pdf', 'doc', 'docx', 'txt', 'rtf']
+        spreadsheet_extensions = ['xls', 'xlsx', 'csv']
+        presentation_extensions = ['ppt', 'pptx']
+        image_extensions = ['jpg', 'jpeg', 'png', 'gif']
+        archive_extensions = ['zip', 'rar']
+
+        if self.file_extension in document_extensions:
+            return 'document'
+        elif self.file_extension in spreadsheet_extensions:
+            return 'spreadsheet'
+        elif self.file_extension in presentation_extensions:
+            return 'presentation'
+        elif self.file_extension in image_extensions:
+            return 'image'
+        elif self.file_extension in archive_extensions:
+            return 'archive'
+        else:
+            return 'other'
+
+    @property
+    def download_url(self):
+        """Generate download URL for the file"""
+        return f"/api/storage/{self.document_id}/download/"
+
+    @property
+    def preview_url(self):
+        """Generate preview URL for the file (for viewable files)"""
+        viewable_extensions = ['pdf', 'jpg', 'jpeg', 'png', 'gif']
+        if self.file_extension in viewable_extensions:
+            return f"/api/storage/{self.document_id}/preview/"
+        return None
+
+    def can_preview(self):
+        """Check if file can be previewed in browser"""
+        viewable_extensions = ['pdf', 'jpg', 'jpeg', 'png', 'gif']
+        return self.file_extension in viewable_extensions
+
+    def get_mime_type(self):
+        """Get MIME type for the file"""
+        mime_map = {
+            'pdf': 'application/pdf',
+            'doc': 'application/msword',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xls': 'application/vnd.ms-excel',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'ppt': 'application/vnd.ms-powerpoint',
+            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'gif': 'image/gif',
+            'txt': 'text/plain',
+            'csv': 'text/csv',
+            'zip': 'application/zip',
+            'rar': 'application/x-rar-compressed',
+        }
+        return mime_map.get(self.file_extension, 'application/octet-stream')

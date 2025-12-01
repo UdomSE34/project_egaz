@@ -7,16 +7,30 @@ from datetime import date, timedelta
 
 class PdfService:
     @staticmethod
-    def generate_pdf(schedules, last_two_days_only=True):
+    def generate_pdf(schedules, addresses_filter=None, last_two_days_only=True):
+        """
+        Generate PDF with optional address filtering
+        
+        Args:
+            schedules: List of schedule objects
+            addresses_filter: List of addresses to include (empty = all addresses)
+            last_two_days_only: Whether to filter for last two days only
+        """
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter)
         elements = []
         styles = getSampleStyleSheet()
 
-        # Title
+        # Title with filter info
         title_style = styles['Title']
         title_style.textColor = colors.HexColor("#003366")
-        title = Paragraph("Pending Schedules", title_style)
+        
+        if addresses_filter:
+            title_text = f"Pending Schedules - {', '.join(addresses_filter)}"
+        else:
+            title_text = "Pending Schedules - All Hotels"
+            
+        title = Paragraph(title_text, title_style)
         elements.append(title)
         elements.append(Spacer(1, 12))
 
@@ -28,6 +42,10 @@ class PdfService:
 
         for s in schedules:
             if s.status != "Pending":
+                continue
+
+            # Apply address filter if provided
+            if addresses_filter and s.hotel.address not in addresses_filter:
                 continue
 
             if last_two_days_only:
@@ -44,7 +62,11 @@ class PdfService:
                 filtered_schedules.append((s, s.week_start_date or today))
 
         if not filtered_schedules:
-            elements.append(Paragraph("No pending schedules found for the selected period.", styles['Normal']))
+            no_data_msg = "No pending schedules found"
+            if addresses_filter:
+                no_data_msg += f" for {', '.join(addresses_filter)}"
+            no_data_msg += " for the selected period."
+            elements.append(Paragraph(no_data_msg, styles['Normal']))
         else:
             data = [["Hotel", "Address", "Date", "Day", "Slot", "Status"]]
             for s, schedule_date in filtered_schedules:
