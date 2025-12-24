@@ -202,4 +202,31 @@ def create_attendance_for_new_user(sender, instance, created, **kwargs):
                     "comment": "Auto-created for new user",
                     "absent_count": 0
                 }
-            )
+            ) 
+
+# signals.py
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from django.db import transaction
+from .models import Schedule
+from .services.auto_scheduler import AutoScheduler
+import logging
+
+logger = logging.getLogger(__name__)
+
+@receiver(post_save, sender=Schedule)
+def ensure_future_weeks_exist(sender, instance, created, **kwargs):
+    """
+    Signal to ensure upcoming weeks exist whenever a new schedule is created.
+    Safe: no deletes, no template logic. Uses a transaction to prevent DB locks.
+    """
+    if not created:
+        return  # Only act on newly created schedules
+
+    try:
+        # Wrap in atomic transaction to avoid partial writes / DB locks
+        with transaction.atomic():
+            AutoScheduler.ensure_upcoming_weeks()
+        logger.debug("AutoScheduler: ensured upcoming weeks via signal")
+    except Exception as e:
+        logger.error(f"AutoScheduler signal error: {str(e)}")

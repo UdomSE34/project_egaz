@@ -1,3 +1,4 @@
+# urls.py
 from django.urls import path, include
 from rest_framework import routers
 from .views import *
@@ -13,7 +14,7 @@ router.register(r'waste-types', WasteTypeViewSet)
 router.register(r'vehicles', VehicleViewSet)
 router.register(r'teams', TeamViewSet)
 router.register(r'work-shifts', WorkShiftViewSet)
-router.register(r'schedules', ScheduleViewSet)
+router.register(r'schedules', ScheduleViewSet)  # ✅ HII IMOJA TUU
 router.register(r'notifications', NotificationViewSet)
 router.register(r'alerts', AlertViewSet)
 router.register(r'completed-waste-records', CompletedWasteRecordViewSet)
@@ -38,6 +39,7 @@ router.register(r'public/documents', PublicDocumentViewSet, basename='public-doc
 # Invoices
 router.register(r'invoices', InvoiceViewSet, basename='invoice')
 
+# Additional schedule endpoints for auto-generation
 urlpatterns = [
     path('', include(router.urls)),
     
@@ -45,6 +47,20 @@ urlpatterns = [
     path("reports/waste/", views.download_waste_report, name="waste_report"),
     path("reports/payment/", views.download_payment_report, name="payment_report"),
     
-    # 🔥 NEW: Additional endpoints for MonthlySummary (if needed)
-    # These are already included in the ViewSet, but you can add custom ones here if needed
+    # 🔥 NEW: Auto-scheduler endpoints
+    path('schedules/weekly-overview/', 
+         ScheduleViewSet.as_view({'get': 'weekly_overview'}), 
+         name='weekly-overview'),
+    path('schedules/by-week-type/', 
+         ScheduleViewSet.as_view({'get': 'by_week_type'}), 
+         name='by-week-type'),
+    path('schedules/initialize-system/', 
+         ScheduleViewSet.as_view({'post': 'initialize_system'}), 
+         name='initialize-system'),
+    path('schedules/cleanup-old/', 
+         ScheduleViewSet.as_view({'post': 'cleanup_old'}), 
+         name='cleanup-old'),
+    path('schedules/system-status/', 
+         ScheduleViewSet.as_view({'get': 'system_status'}), 
+         name='system-status'),
 ]

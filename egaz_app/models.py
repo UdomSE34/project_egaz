@@ -242,6 +242,12 @@ class WorkShift(models.Model):
     scheduled_end_time = models.DateTimeField()
     shift_type = models.CharField(max_length=20, choices=[('Morning','Morning'),('Evening','Evening'),('Night','Night')])
 
+# models.py
+from django.db import models
+import uuid
+from django.utils import timezone
+from datetime import datetime, timedelta
+
 class Schedule(models.Model):
     STATUS_CHOICES = [
         ('Pending','Pending'),
@@ -251,7 +257,7 @@ class Schedule(models.Model):
 
     SLOT_CHOICES = [
         ("06:00 – 12:00", "Morning (06:00 – 12:00)"),
-        ("06:00 – 18:00", "Afternoon (00:30 – 18:00)"),
+        ("06:00 – 18:00", "Afternoon (06:00 – 18:00)"),
     ]
 
     DAYS_OF_WEEK = [
@@ -262,25 +268,81 @@ class Schedule(models.Model):
     schedule_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     day = models.CharField(max_length=50, choices=DAYS_OF_WEEK)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
-    
-    # NEW FIELD: Show schedule to user
-    is_visible = models.BooleanField(default=False, help_text="Check if this schedule should be visible to users")
-
+    is_visible = models.BooleanField(default=False)
     slot = models.CharField(max_length=20, choices=SLOT_CHOICES, default="Morning")
-
     hotel = models.ForeignKey("Hotel", on_delete=models.CASCADE, related_name="schedules")
     completion_notes = models.TextField(blank=True, null=True)
     week_start_date = models.DateField(null=True, blank=True)
+    schedule_date = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['week_start_date', 'day', 'slot']
         verbose_name = 'Schedule'
         verbose_name_plural = 'Schedules'
+        unique_together = ['hotel', 'day', 'slot', 'week_start_date']
 
     def __str__(self):
         return f"{self.hotel.name} - {self.day} ({self.slot}) - {self.status}"
-
+    
+    def save(self, *args, **kwargs):
+        """Kokotoa schedule_date kiotomatiki"""
+        if self.week_start_date and self.day:
+            day_index = {
+                'Monday': 0, 'Tuesday': 1, 'Wednesday': 2,
+                'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6
+            }
+            days_to_add = day_index.get(self.day, 0)
+            self.schedule_date = self.week_start_date + timedelta(days=days_to_add)
+        
+        # Check if this is new schedule for current week
+        is_new = self._state.adding
+        
+        super().save(*args, **kwargs)
+        
+        # AUTO-GENERATE: If new schedule for current week, generate upcoming weeks
+        if is_new and self.is_current_week():
+            from .services.auto_scheduler import AutoScheduler
+            AutoScheduler.ensure_upcoming_weeks()
+    
+    def is_current_week(self):
+        """Check if this schedule is for current week"""
+        if not self.week_start_date:
+            return False
+        today = timezone.now().date()
+        current_monday = today - timedelta(days=today.weekday())
+        return self.week_start_date == current_monday
+    
+    def is_upcoming_week(self):
+        """Check if this schedule is for upcoming week"""
+        if not self.week_start_date:
+            return False
+        today = timezone.now().date()
+        current_monday = today - timedelta(days=today.weekday())
+        next_monday = current_monday + timedelta(days=7)
+        return self.week_start_date == next_monday
+    
+    def is_future_week(self):
+        """Check if this schedule is for future weeks beyond next"""
+        if not self.week_start_date:
+            return False
+        today = timezone.now().date()
+        current_monday = today - timedelta(days=today.weekday())
+        week_after_next = current_monday + timedelta(days=14)
+        return self.week_start_date >= week_after_next
+    
+    @property
+    def week_type(self):
+        """Return week type: current, upcoming, future, past"""
+        if self.is_current_week():
+            return 'current'
+        elif self.is_upcoming_week():
+            return 'upcoming'
+        elif self.is_future_week():
+            return 'future'
+        else:
+            return 'past'
+        
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey

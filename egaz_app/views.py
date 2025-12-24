@@ -517,18 +517,19 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
     serializer_class = WorkShiftSerializer
     authentication_classes = [CustomTokenAuthentication]  # <-- Use custom auth
     permission_classes = [IsAuthenticated] # Only authenticated users/clients can access
-   
+
+# views.py
+from datetime import datetime, timedelta
+from django.http import HttpResponse
+from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
-from django.http import HttpResponse
-from .authentication import CustomTokenAuthentication
-from .models import Schedule
+from .models import Schedule, Hotel
 from .serializers import ScheduleSerializer
+from .services.auto_scheduler import AutoScheduler
+from .services.pdf_service import PdfService
 from .utils import send_apology_email
-from .services.pdf_service import PdfService  # Import your PDF service
-from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
@@ -537,107 +538,258 @@ logger = logging.getLogger(__name__)
 class ScheduleViewSet(viewsets.ModelViewSet):
     queryset = Schedule.objects.all()
     serializer_class = ScheduleSerializer
-    authentication_classes = [CustomTokenAuthentication]
     permission_classes = [IsAuthenticated]
     lookup_field = "schedule_id"
 
-    # ✅ Download filtered PDF
+    # -------------------------------
+    # OVERRIDE QUERYSET
+    # -------------------------------
+    def get_queryset(self):
+        """
+        Always ensure upcoming weeks exist before returning schedules
+        """
+        AutoScheduler.ensure_upcoming_weeks()
+        queryset = Schedule.objects.all()
+
+        # Filter by week_start date
+        week_start = self.request.query_params.get("week_start")
+        if week_start:
+            try:
+                date = datetime.strptime(week_start, "%Y-%m-%d").date()
+                queryset = queryset.filter(week_start_date=date)
+            except ValueError:
+                pass
+
+        # Filter by week_type
+        week_type = self.request.query_params.get("week_type")
+        current_monday = AutoScheduler.get_current_monday()
+        if week_type == "current":
+            queryset = queryset.filter(week_start_date=current_monday)
+        elif week_type == "upcoming":
+            queryset = queryset.filter(week_start_date=current_monday + timedelta(days=7))
+        elif week_type == "future":
+            queryset = queryset.filter(week_start_date__gte=current_monday + timedelta(days=14))
+        elif week_type == "past":
+            queryset = queryset.filter(week_start_date__lt=current_monday)
+
+        return queryset.select_related("hotel")
+
+    # -------------------------------
+    # LIST
+    # -------------------------------
+    def list(self, request, *args, **kwargs):
+        """
+        List schedules with auto-maintenance
+        """
+        maintenance_result = AutoScheduler.ensure_upcoming_weeks()
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            "schedules": serializer.data,
+            "count": queryset.count(),
+            "auto_maintenance": maintenance_result,
+            "current_week_start": AutoScheduler.get_current_monday()
+        })
+
+    # -------------------------------
+    # CREATE
+    # -------------------------------
+    def create(self, request, *args, **kwargs):
+        AutoScheduler.ensure_upcoming_weeks()
+        response = super().create(request, *args, **kwargs)
+        if response.status_code == status.HTTP_201_CREATED:
+            AutoScheduler.ensure_upcoming_weeks()
+            response.data['auto_message'] = "Schedule created and upcoming weeks maintained"
+        return response
+
+    # -------------------------------
+    # WEEKLY OVERVIEW
+    # -------------------------------
+    @action(detail=False, methods=["get"])
+    def weekly_overview(self, request):
+        try:
+            AutoScheduler.ensure_upcoming_weeks()
+            current_monday = AutoScheduler.get_current_monday()
+            weeks_data = {}
+            for i in range(0, 3):
+                week_start = current_monday + timedelta(days=i * 7)
+                schedules = Schedule.objects.filter(week_start_date=week_start)
+                weeks_data[f"week_{i}"] = {
+                    "week_start": week_start,
+                    "week_label": ["This Week", "Next Week", "Week After Next"][i],
+                    "schedules": ScheduleSerializer(schedules, many=True).data,
+                    "count": schedules.count(),
+                    "pending_count": schedules.filter(status="Pending").count(),
+                    "in_progress_count": schedules.filter(status="In_Progress").count(),
+                    "completed_count": schedules.filter(status="Completed").count()
+                }
+            return Response({
+                "weeks": weeks_data,
+                "message": "Schedules automatically maintained"
+            })
+        except Exception as e:
+            logger.error(f"Weekly overview error: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # -------------------------------
+    # FILTER BY WEEK TYPE
+    # -------------------------------
+    @action(detail=False, methods=["get"])
+    def by_week_type(self, request):
+        week_type = request.query_params.get("type", "current")
+        AutoScheduler.ensure_upcoming_weeks()
+        current_monday = AutoScheduler.get_current_monday()
+
+        if week_type == "current":
+            queryset = Schedule.objects.filter(week_start_date=current_monday)
+        elif week_type == "upcoming":
+            queryset = Schedule.objects.filter(week_start_date=current_monday + timedelta(days=7))
+        elif week_type == "future":
+            queryset = Schedule.objects.filter(week_start_date__gte=current_monday + timedelta(days=14))
+        elif week_type == "all_upcoming":
+            queryset = Schedule.objects.filter(week_start_date__gte=current_monday + timedelta(days=7))
+        else:
+            queryset = Schedule.objects.filter(week_start_date=current_monday)
+
+        serializer = ScheduleSerializer(queryset.select_related("hotel"), many=True)
+        return Response({
+            "week_type": week_type,
+            "week_start": current_monday,
+            "schedules": serializer.data,
+            "count": queryset.count()
+        })
+
+    # -------------------------------
+    # INITIALIZE SYSTEM
+    # -------------------------------
+    @action(detail=False, methods=["post"])
+    def initialize_system(self, request):
+        try:
+            result = AutoScheduler.regenerate_week(AutoScheduler.get_current_monday())
+            return Response({
+                "success": True,
+                "message": "System initialized for current week",
+                "created": result
+            }, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f"Initialize system error: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # -------------------------------
+    # CLEANUP OLD SCHEDULES
+    # -------------------------------
+    @action(detail=False, methods=["post"])
+    def cleanup_old(self, request):
+        keep_weeks = request.data.get("keep_weeks", 4)
+        result = AutoScheduler.cleanup_old_schedules(keep_weeks)
+        return Response({
+            "deleted": result.get("deleted", 0),
+            "cutoff_date": result.get("cutoff_date")
+        })
+
+    # -------------------------------
+    # SYSTEM STATUS
+    # -------------------------------
+    @action(detail=False, methods=["get"])
+    def system_status(self, request):
+        try:
+            current_monday = AutoScheduler.get_current_monday()
+            status_report = {
+                "current_week": {
+                    "start": current_monday,
+                    "count": Schedule.objects.filter(week_start_date=current_monday).count()
+                },
+                "next_week": {
+                    "start": current_monday + timedelta(days=7),
+                    "count": Schedule.objects.filter(week_start_date=current_monday + timedelta(days=7)).count()
+                },
+                "week_after_next": {
+                    "start": current_monday + timedelta(days=14),
+                    "count": Schedule.objects.filter(week_start_date=current_monday + timedelta(days=14)).count()
+                },
+                "hotels_count": Hotel.objects.count(),
+                "total_schedules": Schedule.objects.count()
+            }
+            return Response(status_report)
+        except Exception as e:
+            logger.error(f"System status error: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # -------------------------------
+    # PDF DOWNLOAD
+    # -------------------------------
     @action(detail=False, methods=["post"])
     def download_filtered_pdf(self, request):
         try:
+            AutoScheduler.ensure_upcoming_weeks()
             addresses_filter = request.data.get("addresses", [])
-            
-            # Get all pending schedules
-            schedules = Schedule.objects.filter(status="Pending").select_related('hotel')
-            
-            # Generate PDF with filters
+            schedules = Schedule.objects.filter(status="Pending")
             pdf_content = PdfService.generate_pdf(
                 schedules=schedules,
                 addresses_filter=addresses_filter,
                 last_two_days_only=True
             )
-            
-            # Create filename based on filter
-            if addresses_filter:
-                filename = f"{'_'.join([addr.replace(' ', '_') for addr in addresses_filter])}_schedules.pdf"
-            else:
-                filename = "all_hotels_schedules.pdf"
-            
-            response = HttpResponse(pdf_content, content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            filename = "filtered_schedules.pdf" if not addresses_filter else \
+                f"{'_'.join([a.replace(' ', '_') for a in addresses_filter])}_schedules.pdf"
+            response = HttpResponse(pdf_content, content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
             return response
-            
         except Exception as e:
             logger.error(f"PDF generation error: {str(e)}")
-            return Response(
-                {"error": "Failed to generate PDF"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return Response({"error": "Failed to generate PDF"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # ✅ Update visibility for all schedules of a hotel (by hotel ID)
+    # -------------------------------
+    # UPDATE VISIBILITY BY HOTEL
+    # -------------------------------
     @action(detail=False, methods=["patch"])
     def update_visibility_by_hotel(self, request):
+        AutoScheduler.ensure_upcoming_weeks()
         hotel_id = request.data.get("hotel_id")
         is_visible = request.data.get("is_visible", True)
-
         if not hotel_id:
             return Response({"error": "hotel_id required"}, status=status.HTTP_400_BAD_REQUEST)
-
         updated = Schedule.objects.filter(hotel__id=hotel_id).update(is_visible=is_visible)
-        return Response(
-            {"updated": updated, "hotel_id": hotel_id, "is_visible": is_visible},
-            status=status.HTTP_200_OK
-        )
+        return Response({"updated": updated, "hotel_id": hotel_id, "is_visible": is_visible})
 
-    # ✅ Send today's apology messages (by hotel ID)
+    # -------------------------------
+    # SEND TODAY/TOMORROW MESSAGES
+    # -------------------------------
     @action(detail=False, methods=["post"])
     def send_today_message(self, request):
-        today_name = datetime.now().strftime('%A')
+        AutoScheduler.ensure_upcoming_weeks()
+        today_name = datetime.now().strftime("%A")
         hotel_id = request.data.get("hotel_id")
-
         qs = Schedule.objects.filter(status="Pending", day=today_name)
         if hotel_id:
             qs = qs.filter(hotel__id=hotel_id)
-
-        sent_count = 0
-        sent_hotels = []
-
-        for schedule in qs:
-            if send_apology_email(schedule, "today"):
+        sent_count, sent_hotels = 0, []
+        for s in qs:
+            if send_apology_email(s, "today"):
                 sent_count += 1
-                sent_hotels.append(schedule.hotel.name)
-                logger.info(f"Today's apology sent to hotel ID {schedule.hotel.hotel_id}: {schedule.hotel.name}")
+                sent_hotels.append(s.hotel.name)
+        return Response({"message": f"{sent_count} emails sent", "hotels": sent_hotels})
 
-        return Response(
-            {"message": f"{sent_count} apology emails sent for today.", "hotels": sent_hotels},
-            status=status.HTTP_200_OK
-        )
-
-    # ✅ Send tomorrow's apology messages (by hotel ID)
     @action(detail=False, methods=["post"])
     def send_tomorrow_message(self, request):
-        tomorrow_name = (datetime.now() + timedelta(days=1)).strftime('%A')
+        AutoScheduler.ensure_upcoming_weeks()
+        tomorrow_name = (datetime.now() + timedelta(days=1)).strftime("%A")
         hotel_id = request.data.get("hotel_id")
-
         qs = Schedule.objects.filter(status="Pending", day=tomorrow_name)
         if hotel_id:
             qs = qs.filter(hotel__id=hotel_id)
-
-        sent_count = 0
-        sent_hotels = []
-
-        for schedule in qs:
-            if send_apology_email(schedule, "tomorrow"):
+        sent_count, sent_hotels = 0, []
+        for s in qs:
+            if send_apology_email(s, "tomorrow"):
                 sent_count += 1
-                sent_hotels.append(schedule.hotel.name)
-                logger.info(f"Tomorrow's apology sent to hotel ID {schedule.hotel.hotel_id}: {schedule.hotel.name}")
+                sent_hotels.append(s.hotel.name)
+        return Response({"message": f"{sent_count} emails sent", "hotels": sent_hotels})
 
-        return Response(
-            {"message": f"{sent_count} apology emails sent for tomorrow.", "hotels": sent_hotels},
-            status=status.HTTP_200_OK
-        )
-        
-        
     
 from rest_framework import viewsets, serializers
 from rest_framework.decorators import action

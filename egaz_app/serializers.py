@@ -148,11 +148,23 @@ class WorkShiftSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+# serializers.py
+from rest_framework import serializers
+from .models import Schedule
+from .models import Hotel  # Adjust based on your app structure
+
 class ScheduleSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     address = serializers.CharField(source="hotel.address", read_only=True)
     hotel = serializers.PrimaryKeyRelatedField(queryset=Hotel.objects.all(), write_only=True)
-
+    
+    # Auto-calculated fields
+    is_current_week = serializers.BooleanField(read_only=True)
+    is_upcoming_week = serializers.BooleanField(read_only=True)
+    week_type = serializers.CharField(read_only=True)
+    schedule_date_display = serializers.SerializerMethodField()
+    week_label = serializers.SerializerMethodField()
+    
     class Meta:
         model = Schedule
         fields = [
@@ -164,8 +176,147 @@ class ScheduleSerializer(serializers.ModelSerializer):
             'hotel_name',
             'address',
             'is_visible',
+            'week_start_date',
+            'schedule_date',
+            'completion_notes',
+            'created_at',
+            'is_current_week',
+            'is_upcoming_week',
+            'week_type',
+            'schedule_date_display',
+            'week_label'
         ]
+        read_only_fields = [
+            'schedule_id', 
+            'created_at', 
+            'schedule_date',
+            'is_current_week',
+            'is_upcoming_week',
+            'week_type'
+        ]
+    
+    def get_schedule_date_display(self, obj):
+        """Format schedule date for display"""
+        if obj.schedule_date:
+            return obj.schedule_date.strftime('%A, %b %d, %Y')
+        return None
+    
+    def get_week_label(self, obj):
+        """Get human-readable week label"""
+        from .services.auto_scheduler import AutoScheduler
+        
+        if not obj.week_start_date:
+            return "No Date"
+        
+        current_monday = AutoScheduler.get_current_monday()
+        
+        if obj.week_start_date == current_monday:
+            return "This Week"
+        elif obj.week_start_date == current_monday + timedelta(days=7):
+            return "Next Week"
+        elif obj.week_start_date == current_monday + timedelta(days=14):
+            return "Week After Next"
+        else:
+            # Calculate weeks difference
+            weeks_diff = (obj.week_start_date - current_monday).days // 7
+            if weeks_diff > 0:
+                return f"{weeks_diff} Weeks Ahead"
+            else:
+                return f"{-weeks_diff} Weeks Ago"
+    
+    def validate(self, data):
+        """Auto-set week_start_date if not provided"""
+        from .services.auto_scheduler import AutoScheduler
+        
+        if 'week_start_date' not in data or not data['week_start_date']:
+            # Default to current week
+            data['week_start_date'] = AutoScheduler.get_current_monday()
+        
+        return data# serializers.py
+from rest_framework import serializers
+from .models import Schedule
+from .models import Hotel  # Adjust based on your app structure
 
+class ScheduleSerializer(serializers.ModelSerializer):
+    hotel_name = serializers.CharField(source="hotel.name", read_only=True)
+    address = serializers.CharField(source="hotel.address", read_only=True)
+    hotel = serializers.PrimaryKeyRelatedField(queryset=Hotel.objects.all(), write_only=True)
+    
+    # Auto-calculated fields
+    is_current_week = serializers.BooleanField(read_only=True)
+    is_upcoming_week = serializers.BooleanField(read_only=True)
+    week_type = serializers.CharField(read_only=True)
+    schedule_date_display = serializers.SerializerMethodField()
+    week_label = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Schedule
+        fields = [
+            'schedule_id',
+            'day',
+            'slot',
+            'status',
+            'hotel',
+            'hotel_name',
+            'address',
+            'is_visible',
+            'week_start_date',
+            'schedule_date',
+            'completion_notes',
+            'created_at',
+            'is_current_week',
+            'is_upcoming_week',
+            'week_type',
+            'schedule_date_display',
+            'week_label'
+        ]
+        read_only_fields = [
+            'schedule_id', 
+            'created_at', 
+            'schedule_date',
+            'is_current_week',
+            'is_upcoming_week',
+            'week_type'
+        ]
+    
+    def get_schedule_date_display(self, obj):
+        """Format schedule date for display"""
+        if obj.schedule_date:
+            return obj.schedule_date.strftime('%A, %b %d, %Y')
+        return None
+    
+    def get_week_label(self, obj):
+        """Get human-readable week label"""
+        from .services.auto_scheduler import AutoScheduler
+        
+        if not obj.week_start_date:
+            return "No Date"
+        
+        current_monday = AutoScheduler.get_current_monday()
+        
+        if obj.week_start_date == current_monday:
+            return "This Week"
+        elif obj.week_start_date == current_monday + timedelta(days=7):
+            return "Next Week"
+        elif obj.week_start_date == current_monday + timedelta(days=14):
+            return "Week After Next"
+        else:
+            # Calculate weeks difference
+            weeks_diff = (obj.week_start_date - current_monday).days // 7
+            if weeks_diff > 0:
+                return f"{weeks_diff} Weeks Ahead"
+            else:
+                return f"{-weeks_diff} Weeks Ago"
+    
+    def validate(self, data):
+        """Auto-set week_start_date if not provided"""
+        from .services.auto_scheduler import AutoScheduler
+        
+        if 'week_start_date' not in data or not data['week_start_date']:
+            # Default to current week
+            data['week_start_date'] = AutoScheduler.get_current_monday()
+        
+        return data
 
 class AttendanceSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="user.name", read_only=True)
